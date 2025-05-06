@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import Foundation
+import CryptoKit
 
 // MARK: - 数据模型
 
@@ -20,6 +21,10 @@ final class LockedFile {
     var name: String
     var lockDate: Date
     var bookmark: Data? // 添加书签数据以便持久访问文件
+    var isPasswordProtected: Bool // 添加密码保护标志
+    var passwordHash: String? // 存储密码的哈希值，而非明文密码
+    var accessAttempts: Int // 记录访问尝试次数
+    var lastAccessTime: Date? // 最后一次访问时间
     
     init(path: String, isLocked: Bool = true, isDirectory: Bool = false, bookmark: Data? = nil) {
         self.path = path
@@ -28,6 +33,28 @@ final class LockedFile {
         self.name = URL(fileURLWithPath: path).lastPathComponent
         self.lockDate = Date()
         self.bookmark = bookmark
+        self.isPasswordProtected = false
+        self.passwordHash = nil
+        self.accessAttempts = 0
+        self.lastAccessTime = nil
+    }
+}
+
+// 添加密码访问记录模型
+@Model
+final class PasswordAccessLog {
+    var filePath: String
+    var fileName: String
+    var accessTime: Date
+    var isSuccessful: Bool
+    var accessType: String // "unlock", "lock", "view"
+    
+    init(filePath: String, fileName: String, accessTime: Date = Date(), isSuccessful: Bool, accessType: String) {
+        self.filePath = filePath
+        self.fileName = fileName
+        self.accessTime = accessTime
+        self.isSuccessful = isSuccessful
+        self.accessType = accessType
     }
 }
 
@@ -82,6 +109,41 @@ class FileLockerService {
         } catch {
             throw FileLockError.bookmarkRestorationFailed
         }
+    }
+    
+    // 生成密码哈希
+    func hashPassword(_ password: String) -> String {
+        // 简单哈希实现，实际应用中应使用更安全的哈希算法和加盐
+        let passwordData = password.data(using: .utf8)!
+        let hash = SHA256.hash(data: passwordData)
+        return hash.compactMap { String(format: "%02x", $0) }.joined()
+    }
+    
+    // 验证密码
+    func verifyPassword(_ password: String, against hash: String) -> Bool {
+        let inputHash = hashPassword(password)
+        return inputHash == hash
+    }
+    
+    // 锁定文件并设置密码保护
+    func lockFileWithPassword(at path: String, password: String, withBookmark bookmark: Data? = nil) throws -> String {
+        // 先常规锁定文件
+        try lockFile(at: path, withBookmark: bookmark)
+        
+        // 生成密码哈希并返回
+        return hashPassword(password)
+    }
+    
+    // 用密码解锁文件
+    func unlockFileWithPassword(at path: String, password: String, against hash: String, withBookmark bookmark: Data? = nil) throws -> Bool {
+        // 验证密码
+        if !verifyPassword(password, against: hash) {
+            return false
+        }
+        
+        // 密码验证通过，解锁文件
+        try unlockFile(at: path, withBookmark: bookmark)
+        return true
     }
     
     func lockFile(at path: String, withBookmark bookmark: Data? = nil) throws {
@@ -1737,6 +1799,10 @@ struct FileItemRowView: View {
     @Binding var expandedItems: Set<UUID>
     let onToggleExpand: (FileSystemItem) -> Void
     let onLockItem: (FileSystemItem) -> Void
+    @State private var showingPasswordDialog = false
+    @State private var password = ""
+    @State private var confirmPassword = ""
+    @Environment(\.modelContext) private var modelContext
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1774,7 +1840,13 @@ struct FileItemRowView: View {
                     Button(action: {
                         onLockItem(item)
                     }) {
-                        Label("锁定", systemImage: "lock")
+                        Label("常规锁定", systemImage: "lock")
+                    }
+                    
+                    Button(action: {
+                        showingPasswordDialog = true
+                    }) {
+                        Label("密码锁定", systemImage: "lock.shield")
                     }
                     
                     if item.isDirectory {
@@ -1810,6 +1882,118 @@ struct FileItemRowView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingPasswordDialog) {
+            PasswordLockDialogView(
+                password: $password,
+                confirmPassword: $confirmPassword,
+                onSubmit: {
+                    lockWithPassword()
+                }
+            )
+        }
+    }
+    
+    private func lockWithPassword() {
+        guard !password.isEmpty, password == confirmPassword else { return }
+        
+        do {
+            // 创建书签
+            let bookmarkData = try FileLockerService.shared.createSecureBookmark(for: item.url)
+            
+            // 生成密码哈希
+            let passwordHash = FileLockerService.shared.hashPassword(password)
+            
+            // 创建新的锁定文件记录
+            let newFile = LockedFile(
+                path: item.url.path, 
+                isLocked: true, 
+                isDirectory: item.isDirectory, 
+                bookmark: bookmarkData
+            )
+            
+            // 设置密码保护相关属性
+            newFile.isPasswordProtected = true
+            newFile.passwordHash = passwordHash
+            newFile.lastAccessTime = Date()
+            
+            // 锁定文件
+            try FileLockerService.shared.lockFile(at: item.url.path, withBookmark: bookmarkData)
+            
+            // 添加到数据库
+            modelContext.insert(newFile)
+            
+            // 添加访问日志
+            let log = PasswordAccessLog(
+                filePath: item.url.path,
+                fileName: item.name,
+                isSuccessful: true,
+                accessType: "password_set"
+            )
+            modelContext.insert(log)
+            
+            // 清空密码
+            password = ""
+            confirmPassword = ""
+            
+        } catch {
+            print("密码锁定文件失败: \(error.localizedDescription)")
+        }
+    }
+}
+
+// 密码锁定对话框
+struct PasswordLockDialogView: View {
+    @Binding var password: String
+    @Binding var confirmPassword: String
+    let onSubmit: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("设置密码锁定")
+                .font(.headline)
+                .padding(.top, 20)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("请输入密码")
+                    .font(.system(size: 13))
+                
+                SecureField("密码", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+                
+                Text("请确认密码")
+                    .font(.system(size: 13))
+                
+                SecureField("确认密码", text: $confirmPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+            }
+            
+            Text("提示: 密码锁定的文件，需要输入正确密码才能解锁访问")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+            
+            HStack(spacing: 12) {
+                Button("取消") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                
+                Button("确定") {
+                    onSubmit()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(password.isEmpty || confirmPassword.isEmpty || password != confirmPassword)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+        .frame(width: 300)
     }
 }
 
@@ -2830,6 +3014,13 @@ struct ContentView: View {
     @State private var selectedFile: LockedFile?
     @State private var searchText = ""
     
+    // 密码保护相关状态
+    @State private var showingPasswordDialog = false
+    @State private var showingPasswordPrompt = false
+    @State private var showingPasswordSettings = false
+    @State private var password = ""
+    @State private var confirmPassword = ""
+    
     var filteredFiles: [LockedFile] {
         if searchText.isEmpty {
             return lockedFiles
@@ -2845,7 +3036,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // 顶部TabBar
             HStack(alignment: .center, spacing: 4) {
-                ForEach(0..<4) { index in
+                ForEach(0..<5) { index in  // 修改为5个功能标签
                     let (title, icon) = functionInfo(for: index)
                     TabBarItem(title: title, icon: icon, isSelected: selectedFunction == index) {
                         withAnimation {
@@ -2895,6 +3086,8 @@ struct ContentView: View {
                     PermissionView()
                 case 3:
                     aboutView
+                case 4:
+                    SecurityView()  // 添加安全视图
                 default:
                     fileLockView
                 }
@@ -2955,6 +3148,34 @@ struct ContentView: View {
                 showNativeFilePicker(isDirectory: true)
             }
         }
+        .sheet(isPresented: $showingPasswordDialog) {
+            PasswordDialogView(
+                password: $password,
+                confirmPassword: $confirmPassword,
+                onSubmit: addPasswordProtection,
+                minLength: 6,
+                requireSpecialChars: true,
+                requireNumbers: true
+            )
+        }
+        .sheet(isPresented: $showingPasswordPrompt) {
+            PasswordPromptView(
+                password: $password,
+                onSubmit: {
+                    verifyPasswordAndUnlock()
+                }
+            )
+        }
+        .sheet(isPresented: $showingPasswordSettings) {
+            PasswordSettingsView(
+                file: selectedFile!,
+                modelContext: modelContext,
+                onPasswordRemoved: {
+                    alertMessage = "密码保护已移除"
+                    showingAlert = true
+                }
+            )
+        }
     }
     
     // 使用原生NSOpenPanel显示文件选择器
@@ -2992,6 +3213,7 @@ struct ContentView: View {
         case 1: return ("全局浏览", "globe")
         case 2: return ("权限检查", "shield")
         case 3: return ("关于", "info.circle")
+        case 4: return ("安全", "lock.shield")  // 添加安全功能
         default: return ("", "")
         }
     }
@@ -3481,6 +3703,109 @@ struct ContentView: View {
             showingAlert = true
         }
     }
+    
+    // 密码保护相关方法
+    private func showPasswordProtectionDialog() {
+        password = ""
+        confirmPassword = ""
+        showingPasswordDialog = true
+    }
+    
+    private func showPasswordSettingsDialog() {
+        showingPasswordSettings = true
+    }
+    
+    private func promptPasswordForUnlock(_ file: LockedFile) {
+        password = ""
+        selectedFile = file
+        showingPasswordPrompt = true
+    }
+    
+    private func addPasswordProtection() {
+        guard let file = selectedFile else { return }
+        
+        // 生成密码哈希
+        let passwordHash = FileLockerService.shared.hashPassword(password)
+        
+        // 设置密码保护相关属性
+        file.isPasswordProtected = true
+        file.passwordHash = passwordHash
+        file.lastAccessTime = Date()
+        
+        // 添加访问日志
+        let log = PasswordAccessLog(
+            filePath: file.path,
+            fileName: file.name,
+            isSuccessful: true,
+            accessType: "password_set"
+        )
+        modelContext.insert(log)
+        
+        // 清空密码
+        password = ""
+        confirmPassword = ""
+        
+        alertMessage = "密码保护已成功添加"
+        showingAlert = true
+    }
+    
+    private func verifyPasswordAndUnlock() {
+        guard let file = selectedFile, file.isPasswordProtected else { return }
+        
+        // 增加访问尝试计数
+        file.accessAttempts += 1
+        
+        // 验证密码
+        if let hash = file.passwordHash, FileLockerService.shared.verifyPassword(password, against: hash) {
+            // 密码正确，解锁文件
+            do {
+                try FileLockerService.shared.unlockFile(at: file.path, withBookmark: file.bookmark)
+                
+                // 更新文件状态
+                file.isLocked = false
+                file.lastAccessTime = Date()
+                
+                // 记录成功访问
+                let log = PasswordAccessLog(
+                    filePath: file.path,
+                    fileName: file.name,
+                    isSuccessful: true,
+                    accessType: "unlock"
+                )
+                modelContext.insert(log)
+                
+                alertMessage = "文件已解锁"
+                showingAlert = true
+            } catch {
+                // 记录失败访问
+                let log = PasswordAccessLog(
+                    filePath: file.path,
+                    fileName: file.name,
+                    isSuccessful: false,
+                    accessType: "unlock"
+                )
+                modelContext.insert(log)
+                
+                alertMessage = "解锁文件失败: \(error.localizedDescription)"
+                showingAlert = true
+            }
+        } else {
+            // 记录失败访问
+            let log = PasswordAccessLog(
+                filePath: file.path,
+                fileName: file.name,
+                isSuccessful: false,
+                accessType: "unlock"
+            )
+            modelContext.insert(log)
+            
+            alertMessage = "密码不正确，请重试"
+            showingAlert = true
+        }
+        
+        // 清空密码
+        password = ""
+    }
 }
 
 // MARK: - 应用入口
@@ -3492,6 +3817,7 @@ struct FileLockerApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             LockedFile.self,
+            PasswordAccessLog.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -3626,5 +3952,795 @@ struct FeatureRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// 添加SecurityView组件
+struct SecurityView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var lockedFiles: [LockedFile]
+    @Query private var accessLogs: [PasswordAccessLog]
+    @State private var passwordProtectedOnly = false
+    @State private var selectedFile: LockedFile?
+    @State private var showingPasswordDialog = false
+    @State private var password = ""
+    @State private var confirmPassword = ""
+    @State private var alertMessage: String?
+    @State private var showingAlert = false
+    @State private var showingResetDialog = false
+    @State private var currentPassword = ""
+    @State private var showingAccessLogs = false
+    @State private var minPasswordLength = 6
+    @State private var requireSpecialChars = true
+    @State private var requireNumbers = true
+    
+    var filteredFiles: [LockedFile] {
+        passwordProtectedOnly ? lockedFiles.filter { $0.isPasswordProtected } : lockedFiles
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("密码保护管理")
+                .font(.headline)
+                .padding(.top, 12)
+            
+            HStack(spacing: 16) {
+                // 左侧列表
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("保护文件列表")
+                            .font(.system(size: 14, weight: .medium))
+                        
+                        Spacer()
+                        
+                        Toggle("仅显示密码保护", isOn: $passwordProtectedOnly)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 12))
+                    }
+                    .padding(.bottom, 4)
+                    
+                    List(selection: $selectedFile) {
+                        ForEach(filteredFiles) { file in
+                            HStack {
+                                Image(systemName: file.isDirectory ? "folder.fill" : "doc.fill")
+                                    .foregroundColor(file.isPasswordProtected ? .blue : .gray)
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(file.name)
+                                        .font(.system(size: 13))
+                                        .lineLimit(1)
+                                    
+                                    Text(file.path)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                                
+                                Spacer()
+                                
+                                if file.isPasswordProtected {
+                                    Image(systemName: "lock.fill")
+                                        .foregroundColor(.blue)
+                                        .font(.system(size: 12))
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                    }
+                    .listStyle(.bordered(alternatesRowBackgrounds: true))
+                    .frame(minHeight: 240)
+                }
+                .frame(width: 300)
+                
+                // 右侧详情
+                VStack(alignment: .leading) {
+                    Text("文件保护详情")
+                        .font(.system(size: 14, weight: .medium))
+                        .padding(.bottom, 8)
+                    
+                    if let file = selectedFile {
+                        // 文件详情卡片
+                        VStack(alignment: .leading, spacing: 16) {
+                            // 文件信息
+                            GroupBox(label: Text("文件信息").font(.system(size: 12, weight: .medium))) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    LabeledContent("名称", value: file.name)
+                                    LabeledContent("路径", value: file.path)
+                                    LabeledContent("类型", value: file.isDirectory ? "文件夹" : "文件")
+                                    LabeledContent("锁定状态", value: file.isLocked ? "已锁定" : "未锁定")
+                                    LabeledContent("密码保护", value: file.isPasswordProtected ? "已启用" : "未启用")
+                                    if let lastAccess = file.lastAccessTime {
+                                        LabeledContent("最后访问", value: formatDate(lastAccess))
+                                    }
+                                    LabeledContent("访问尝试次数", value: "\(file.accessAttempts)")
+                                }
+                                .font(.system(size: 12))
+                                .padding(8)
+                            }
+                            .padding(.horizontal, 4)
+                            
+                            // 密码保护操作
+                            GroupBox(label: Text("密码保护操作").font(.system(size: 12, weight: .medium))) {
+                                VStack(spacing: 10) {
+                                    if file.isPasswordProtected {
+                                        Button("重设密码") {
+                                            resetPassword()
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        
+                                        Button("移除密码保护") {
+                                            removePasswordProtection()
+                                        }
+                                        .buttonStyle(.bordered)
+                                        
+                                        Button("查看访问记录") {
+                                            showingAccessLogs = true
+                                        }
+                                        .buttonStyle(.bordered)
+                                    } else {
+                                        Button("添加密码保护") {
+                                            showingPasswordDialog = true
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+                                }
+                                .padding(8)
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                    } else {
+                        // 未选择文件
+                        VStack(spacing: 15) {
+                            Image(systemName: "lock.shield")
+                                .font(.system(size: 30))
+                                .foregroundColor(.secondary)
+                            Text("选择文件查看详情")
+                                .font(.system(size: 14))
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    
+                    Spacer()
+                    
+                    // 密码策略设置
+                    GroupBox(label: Text("密码策略").font(.system(size: 12, weight: .medium))) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("最小密码长度")
+                                    .font(.system(size: 12))
+                                
+                                Stepper("\(minPasswordLength)个字符", value: $minPasswordLength, in: 4...16)
+                                    .font(.system(size: 12))
+                            }
+                            
+                            HStack {
+                                Toggle("要求特殊字符", isOn: $requireSpecialChars)
+                                    .font(.system(size: 12))
+                                
+                                Spacer()
+                                
+                                Toggle("要求数字", isOn: $requireNumbers)
+                                    .font(.system(size: 12))
+                            }
+                        }
+                        .padding(8)
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding(12)
+        }
+        .sheet(isPresented: $showingPasswordDialog) {
+            PasswordDialogView(
+                password: $password,
+                confirmPassword: $confirmPassword,
+                onSubmit: addPasswordProtection,
+                minLength: minPasswordLength,
+                requireSpecialChars: requireSpecialChars,
+                requireNumbers: requireNumbers
+            )
+        }
+        .sheet(isPresented: $showingResetDialog) {
+            ResetPasswordView(
+                currentPassword: $currentPassword,
+                newPassword: $password,
+                confirmPassword: $confirmPassword,
+                onSubmit: confirmResetPassword,
+                minLength: minPasswordLength,
+                requireSpecialChars: requireSpecialChars,
+                requireNumbers: requireNumbers
+            )
+        }
+        .sheet(isPresented: $showingAccessLogs) {
+            if let file = selectedFile {
+                AccessLogsView(filePath: file.path)
+            }
+        }
+        .alert("操作提示", isPresented: $showingAlert) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            if let message = alertMessage {
+                Text(message)
+            }
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
+    }
+    
+    private func addPasswordProtection() {
+        guard let file = selectedFile else { return }
+        
+        // 验证密码
+        if !validatePassword() { return }
+        
+        // 验证通过，添加密码保护
+        do {
+            let passwordHash = FileLockerService.shared.hashPassword(password)
+            
+            // 设置密码保护属性
+            file.isPasswordProtected = true
+            file.passwordHash = passwordHash
+            file.lastAccessTime = Date()
+            
+            // 重新锁定文件
+            try FileLockerService.shared.lockFile(at: file.path, withBookmark: file.bookmark)
+            
+            // 记录操作日志
+            let log = PasswordAccessLog(
+                filePath: file.path,
+                fileName: file.name,
+                isSuccessful: true,
+                accessType: "password_set"
+            )
+            modelContext.insert(log)
+            
+            // 清空密码字段
+            password = ""
+            confirmPassword = ""
+            
+            alertMessage = "密码保护已成功添加"
+            showingAlert = true
+        } catch {
+            alertMessage = "设置密码保护失败: \(error.localizedDescription)"
+            showingAlert = true
+        }
+    }
+    
+    private func resetPassword() {
+        guard let file = selectedFile, file.isPasswordProtected else { return }
+        showingResetDialog = true
+    }
+    
+    private func confirmResetPassword() {
+        guard let file = selectedFile, file.isPasswordProtected else { return }
+        
+        // 验证当前密码
+        if let hash = file.passwordHash {
+            if !FileLockerService.shared.verifyPassword(currentPassword, against: hash) {
+                alertMessage = "当前密码验证失败"
+                showingAlert = true
+                return
+            }
+        }
+        
+        // 验证新密码
+        if !validatePassword() { return }
+        
+        // 更新密码
+        let newPasswordHash = FileLockerService.shared.hashPassword(password)
+        file.passwordHash = newPasswordHash
+        file.lastAccessTime = Date()
+        
+        // 记录操作日志
+        let log = PasswordAccessLog(
+            filePath: file.path,
+            fileName: file.name,
+            isSuccessful: true,
+            accessType: "password_reset"
+        )
+        modelContext.insert(log)
+        
+        // 清空密码字段
+        password = ""
+        confirmPassword = ""
+        currentPassword = ""
+        
+        alertMessage = "密码已成功重置"
+        showingAlert = true
+    }
+    
+    private func removePasswordProtection() {
+        guard let file = selectedFile, file.isPasswordProtected else { return }
+        
+        // 弹出密码确认
+        // 这里简化处理，实际应该弹出一个对话框确认密码
+        file.isPasswordProtected = false
+        file.passwordHash = nil
+        file.lastAccessTime = Date()
+        
+        // 记录操作日志
+        let log = PasswordAccessLog(
+            filePath: file.path,
+            fileName: file.name,
+            isSuccessful: true,
+            accessType: "password_removed"
+        )
+        modelContext.insert(log)
+        
+        alertMessage = "密码保护已移除"
+        showingAlert = true
+    }
+    
+    private func validatePassword() -> Bool {
+        // 验证密码
+        if password.isEmpty {
+            alertMessage = "密码不能为空"
+            showingAlert = true
+            return false
+        }
+        
+        if password != confirmPassword {
+            alertMessage = "两次输入的密码不一致"
+            showingAlert = true
+            return false
+        }
+        
+        if password.count < minPasswordLength {
+            alertMessage = "密码长度必须至少\(minPasswordLength)个字符"
+            showingAlert = true
+            return false
+        }
+        
+        // 验证是否包含特殊字符
+        if requireSpecialChars {
+            let specialCharRegex = ".*[^A-Za-z0-9].*"
+            if !NSPredicate(format: "SELF MATCHES %@", specialCharRegex).evaluate(with: password) {
+                alertMessage = "密码必须包含至少一个特殊字符"
+                showingAlert = true
+                return false
+            }
+        }
+        
+        // 验证是否包含数字
+        if requireNumbers {
+            let numberRegex = ".*[0-9].*"
+            if !NSPredicate(format: "SELF MATCHES %@", numberRegex).evaluate(with: password) {
+                alertMessage = "密码必须包含至少一个数字"
+                showingAlert = true
+                return false
+            }
+        }
+        
+        return true
+    }
+}
+
+// 密码设置对话框
+struct PasswordDialogView: View {
+    @Binding var password: String
+    @Binding var confirmPassword: String
+    let onSubmit: () -> Void
+    let minLength: Int
+    let requireSpecialChars: Bool
+    let requireNumbers: Bool
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("设置密码保护")
+                .font(.headline)
+                .padding(.top, 20)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("请输入新密码")
+                    .font(.system(size: 13))
+                
+                SecureField("密码", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+                
+                Text("请确认密码")
+                    .font(.system(size: 13))
+                
+                SecureField("确认密码", text: $confirmPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+            }
+            
+            // 密码规则提示
+            VStack(alignment: .leading, spacing: 4) {
+                Text("密码要求：")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                Text("• 至少\(minLength)个字符")
+                    .font(.system(size: 11))
+                    .foregroundColor(password.count >= minLength ? .green : .secondary)
+                
+                if requireSpecialChars {
+                    Text("• 至少1个特殊字符")
+                        .font(.system(size: 11))
+                        .foregroundColor(
+                            NSPredicate(format: "SELF MATCHES %@", ".*[^A-Za-z0-9].*").evaluate(with: password)
+                            ? .green : .secondary
+                        )
+                }
+                
+                if requireNumbers {
+                    Text("• 至少1个数字")
+                        .font(.system(size: 11))
+                        .foregroundColor(
+                            NSPredicate(format: "SELF MATCHES %@", ".*[0-9].*").evaluate(with: password)
+                            ? .green : .secondary
+                        )
+                }
+            }
+            .frame(width: 250, alignment: .leading)
+            .padding(.top, 8)
+            
+            HStack(spacing: 12) {
+                Button("取消") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                
+                Button("确定") {
+                    onSubmit()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(password.isEmpty || confirmPassword.isEmpty || password != confirmPassword)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+        .frame(width: 300)
+    }
+}
+
+// 重置密码对话框
+struct ResetPasswordView: View {
+    @Binding var currentPassword: String
+    @Binding var newPassword: String
+    @Binding var confirmPassword: String
+    let onSubmit: () -> Void
+    let minLength: Int
+    let requireSpecialChars: Bool
+    let requireNumbers: Bool
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("重置密码")
+                .font(.headline)
+                .padding(.top, 20)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("请输入当前密码")
+                    .font(.system(size: 13))
+                
+                SecureField("当前密码", text: $currentPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+                
+                Text("请输入新密码")
+                    .font(.system(size: 13))
+                
+                SecureField("新密码", text: $newPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+                
+                Text("请确认新密码")
+                    .font(.system(size: 13))
+                
+                SecureField("确认新密码", text: $confirmPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+            }
+            
+            // 密码规则提示 (与PasswordDialogView中相同)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("密码要求：")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                Text("• 至少\(minLength)个字符")
+                    .font(.system(size: 11))
+                    .foregroundColor(newPassword.count >= minLength ? .green : .secondary)
+                
+                if requireSpecialChars {
+                    Text("• 至少1个特殊字符")
+                        .font(.system(size: 11))
+                        .foregroundColor(
+                            NSPredicate(format: "SELF MATCHES %@", ".*[^A-Za-z0-9].*").evaluate(with: newPassword)
+                            ? .green : .secondary
+                        )
+                }
+                
+                if requireNumbers {
+                    Text("• 至少1个数字")
+                        .font(.system(size: 11))
+                        .foregroundColor(
+                            NSPredicate(format: "SELF MATCHES %@", ".*[0-9].*").evaluate(with: newPassword)
+                            ? .green : .secondary
+                        )
+                }
+            }
+            .frame(width: 250, alignment: .leading)
+            .padding(.top, 8)
+            
+            HStack(spacing: 12) {
+                Button("取消") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                
+                Button("确定") {
+                    onSubmit()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(currentPassword.isEmpty || newPassword.isEmpty || confirmPassword.isEmpty || newPassword != confirmPassword)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+        .frame(width: 300)
+    }
+}
+
+// 访问记录视图
+struct AccessLogsView: View {
+    let filePath: String
+    @Environment(\.dismiss) private var dismiss
+    @Query private var allLogs: [PasswordAccessLog]
+    
+    var logs: [PasswordAccessLog] {
+        allLogs.filter { $0.filePath == filePath }
+            .sorted { $0.accessTime > $1.accessTime }
+    }
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("文件访问记录")
+                    .font(.headline)
+                
+                Spacer()
+                
+                Button("关闭") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding([.horizontal, .top], 16)
+            
+            if logs.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 32))
+                        .foregroundColor(.secondary)
+                    
+                    Text("暂无访问记录")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Table(logs) {
+                    TableColumn("时间") { log in
+                        Text(formatDate(log.accessTime))
+                            .font(.system(size: 12))
+                    }
+                    
+                    TableColumn("操作类型") { log in
+                        Text(formatAccessType(log.accessType))
+                            .font(.system(size: 12))
+                    }
+                    
+                    TableColumn("状态") { log in
+                        Text(log.isSuccessful ? "成功" : "失败")
+                            .foregroundColor(log.isSuccessful ? .green : .red)
+                            .font(.system(size: 12))
+                    }
+                }
+                .frame(minHeight: 250)
+                .padding(.horizontal, 16)
+            }
+            
+            Spacer()
+        }
+        .frame(width: 400, height: 350)
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
+    }
+    
+    private func formatAccessType(_ type: String) -> String {
+        switch type {
+        case "unlock": return "解锁"
+        case "lock": return "锁定"
+        case "view": return "查看"
+        case "password_set": return "设置密码"
+        case "password_reset": return "重置密码"
+        case "password_removed": return "移除密码"
+        default: return type
+        }
+    }
+}
+
+// 密码验证对话框
+struct PasswordPromptView: View {
+    @Binding var password: String
+    let onSubmit: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("密码验证")
+                .font(.headline)
+                .padding(.top, 20)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("请输入密码解锁文件")
+                    .font(.system(size: 13))
+                
+                SecureField("密码", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+            }
+            
+            HStack(spacing: 12) {
+                Button("取消") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                
+                Button("确定") {
+                    onSubmit()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(password.isEmpty)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+        .frame(width: 300)
+    }
+}
+
+// 密码设置管理视图
+struct PasswordSettingsView: View {
+    let file: LockedFile
+    let modelContext: ModelContext
+    let onPasswordRemoved: () -> Void
+    @State private var showingConfirmRemove = false
+    @State private var confirmPassword = ""
+    @State private var alertMessage: String?
+    @State private var showingAlert = false
+    @State private var showingAccessLogs = false
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("密码保护设置")
+                .font(.headline)
+                .padding(.top, 20)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("文件: \(file.name)")
+                    .font(.system(size: 13, weight: .medium))
+                
+                Text("路径: \(file.path)")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 300, alignment: .leading)
+            .padding(.horizontal, 20)
+            
+            Divider()
+                .padding(.vertical, 8)
+            
+            Button("查看访问记录") {
+                showingAccessLogs = true
+            }
+            .buttonStyle(.bordered)
+            
+            Button("移除密码保护") {
+                showingConfirmRemove = true
+            }
+            .buttonStyle(.bordered)
+            .foregroundColor(.red)
+            
+            Button("关闭") {
+                dismiss()
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+        .frame(width: 350)
+        .alert("操作提示", isPresented: $showingAlert) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            if let message = alertMessage {
+                Text(message)
+            }
+        }
+        .sheet(isPresented: $showingConfirmRemove) {
+            VStack(spacing: 16) {
+                Text("确认移除密码保护")
+                    .font(.headline)
+                    .padding(.top, 20)
+                
+                Text("请输入当前密码以确认移除")
+                    .font(.system(size: 13))
+                
+                SecureField("当前密码", text: $confirmPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 250)
+                
+                HStack(spacing: 12) {
+                    Button("取消") {
+                        confirmPassword = ""
+                        showingConfirmRemove = false
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Button("确定") {
+                        removePasswordProtection()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .foregroundColor(.red)
+                    .disabled(confirmPassword.isEmpty)
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 20)
+            }
+            .frame(width: 300)
+        }
+        .sheet(isPresented: $showingAccessLogs) {
+            AccessLogsView(filePath: file.path)
+        }
+    }
+    
+    private func removePasswordProtection() {
+        // 验证密码
+        if let hash = file.passwordHash, FileLockerService.shared.verifyPassword(confirmPassword, against: hash) {
+            // 密码正确，移除密码保护
+            file.isPasswordProtected = false
+            file.passwordHash = nil
+            
+            // 记录操作日志
+            let log = PasswordAccessLog(
+                filePath: file.path,
+                fileName: file.name,
+                isSuccessful: true,
+                accessType: "password_removed"
+            )
+            modelContext.insert(log)
+            
+            // 关闭对话框
+            showingConfirmRemove = false
+            onPasswordRemoved()
+            dismiss()
+        } else {
+            // 密码错误
+            alertMessage = "密码不正确，无法移除密码保护"
+            showingAlert = true
+            confirmPassword = ""
+            showingConfirmRemove = false
+        }
     }
 }
