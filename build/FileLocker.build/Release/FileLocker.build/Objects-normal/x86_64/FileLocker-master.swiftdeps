@@ -1,0 +1,12 @@
+version: "Apple Swift version 6.0.3 (swiftlang-6.0.3.1.10 clang-1600.0.30.1)"
+options: "4dd3f2391207fae3219ba68cd715d2f65df3be4570414b2a2d64f0c72852b7f6"
+build_start_time: [1746523369, 806900000]
+build_end_time: [1746523369, 810527000]
+inputs:
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/BrowserViewComponents.swift": !dirty [1746523168, 502314235]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ContentView.swift": !dirty [1746523335, 738534333]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/FileLockerMain.swift": !dirty [1746522955, 808670952]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Main.swift": !dirty [1746502787, 607094109]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewComponents.swift": !dirty [1746523309, 805897168]
+  ? "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/DerivedSources/GeneratedAssetSymbols.swift"
+  : !dirty [1746523368, 337825609]

@@ -1,0 +1,660 @@
+//
+//  FileLockerMain.swift
+//  FileLocker
+//
+//  Created by zwd on 2025/5/6.
+//
+
+import SwiftUI
+import SwiftData
+import UniformTypeIdentifiers
+import Foundation
+
+// MARK: - 数据模型
+
+@Model
+final class LockedFile {
+    var path: String
+    var isLocked: Bool
+    var isDirectory: Bool
+    var name: String
+    var lockDate: Date
+    var bookmark: Data? // 添加书签数据以便持久访问文件
+    
+    init(path: String, isLocked: Bool = true, isDirectory: Bool = false, bookmark: Data? = nil) {
+        self.path = path
+        self.isLocked = isLocked
+        self.isDirectory = isDirectory
+        self.name = URL(fileURLWithPath: path).lastPathComponent
+        self.lockDate = Date()
+        self.bookmark = bookmark
+    }
+}
+
+// MARK: - 错误类型
+
+enum FileLockError: Error {
+    case fileNotFound
+    case accessDenied
+    case unknown(String)
+    case bookmarkCreationFailed
+    case bookmarkRestorationFailed
+}
+
+// MARK: - 服务类
+
+class FileLockerService {
+    static let shared = FileLockerService()
+    
+    private init() {}
+    
+    // 创建安全书签以持久访问文件
+    func createSecureBookmark(for url: URL) throws -> Data {
+        do {
+            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            return bookmarkData
+        } catch {
+            throw FileLockError.bookmarkCreationFailed
+        }
+    }
+    
+    // 从书签恢复URL
+    func resolveSecureBookmark(_ bookmarkData: Data) throws -> URL {
+        var isStale = false
+        do {
+            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+            return url
+        } catch {
+            throw FileLockError.bookmarkRestorationFailed
+        }
+    }
+    
+    func lockFile(at path: String, withBookmark bookmark: Data? = nil) throws {
+        var url: URL
+        var shouldStopAccessing = false
+        
+        // 尝试通过书签访问文件
+        if let bookmarkData = bookmark {
+            do {
+                url = try resolveSecureBookmark(bookmarkData)
+                if url.startAccessingSecurityScopedResource() {
+                    shouldStopAccessing = true
+                }
+            } catch {
+                // 如果书签无效，回退到直接路径
+                url = URL(fileURLWithPath: path)
+            }
+        } else {
+            url = URL(fileURLWithPath: path)
+        }
+        
+        var resourceValues = URLResourceValues()
+        resourceValues.isUserImmutable = true
+        
+        do {
+            var mutableURL = url
+            try mutableURL.setResourceValues(resourceValues)
+        } catch {
+            if let nsError = error as NSError? {
+                switch nsError.code {
+                case NSFileNoSuchFileError:
+                    throw FileLockError.fileNotFound
+                case NSFileWriteNoPermissionError:
+                    throw FileLockError.accessDenied
+                default:
+                    throw FileLockError.unknown(error.localizedDescription)
+                }
+            } else {
+                throw FileLockError.unknown(error.localizedDescription)
+            }
+        }
+        
+        if shouldStopAccessing {
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+    
+    func unlockFile(at path: String, withBookmark bookmark: Data? = nil) throws {
+        var url: URL
+        var shouldStopAccessing = false
+        
+        // 尝试通过书签访问文件
+        if let bookmarkData = bookmark {
+            do {
+                url = try resolveSecureBookmark(bookmarkData)
+                if url.startAccessingSecurityScopedResource() {
+                    shouldStopAccessing = true
+                }
+            } catch {
+                // 如果书签无效，回退到直接路径
+                url = URL(fileURLWithPath: path)
+            }
+        } else {
+            url = URL(fileURLWithPath: path)
+        }
+        
+        var resourceValues = URLResourceValues()
+        resourceValues.isUserImmutable = false
+        
+        do {
+            var mutableURL = url
+            try mutableURL.setResourceValues(resourceValues)
+        } catch {
+            if let nsError = error as NSError? {
+                switch nsError.code {
+                case NSFileNoSuchFileError:
+                    throw FileLockError.fileNotFound
+                case NSFileWriteNoPermissionError:
+                    throw FileLockError.accessDenied
+                default:
+                    throw FileLockError.unknown(error.localizedDescription)
+                }
+            } else {
+                throw FileLockError.unknown(error.localizedDescription)
+            }
+        }
+        
+        if shouldStopAccessing {
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+    
+    func isFileLocked(at path: String, withBookmark bookmark: Data? = nil) -> Bool {
+        var url: URL
+        var shouldStopAccessing = false
+        
+        // 尝试通过书签访问文件
+        if let bookmarkData = bookmark {
+            do {
+                url = try resolveSecureBookmark(bookmarkData)
+                if url.startAccessingSecurityScopedResource() {
+                    shouldStopAccessing = true
+                }
+            } catch {
+                // 如果书签无效，回退到直接路径
+                url = URL(fileURLWithPath: path)
+            }
+        } else {
+            url = URL(fileURLWithPath: path)
+        }
+        
+        do {
+            let resourceValues = try url.resourceValues(forKeys: [.isUserImmutableKey])
+            let isLocked = resourceValues.isUserImmutable ?? false
+            
+            if shouldStopAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+            
+            return isLocked
+        } catch {
+            print("检查文件状态错误: \(error.localizedDescription)")
+            
+            if shouldStopAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+            
+            return false
+        }
+    }
+}
+
+// MARK: - 完全磁盘访问权限助手
+
+class FullDiskAccessHelper {
+    static let shared = FullDiskAccessHelper()
+    private let hasShownAccessPromptKey = "hasShownFullDiskAccessPrompt"
+    
+    private init() {}
+    
+    var hasShownAccessPrompt: Bool {
+        get {
+            return UserDefaults.standard.bool(forKey: hasShownAccessPromptKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: hasShownAccessPromptKey)
+        }
+    }
+    
+    // 打开系统偏好设置的完全磁盘访问面板
+    func openFullDiskAccessPreferences() {
+        let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+// MARK: - 视图
+
+struct FullDiskAccessView: View {
+    @Binding var isPresented: Bool
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "folder.badge.gearshape")
+                .font(.system(size: 60))
+                .foregroundColor(.blue)
+            
+            Text("完全磁盘访问权限")
+                .font(.title)
+                .bold()
+            
+            Text("FileLocker需要完全磁盘访问权限才能锁定和保护您的重要文件。\n\n没有这个权限，应用将无法正常保护您的文件。")
+                .multilineTextAlignment(.center)
+                .padding()
+            
+            Text("请按照以下步骤授予权限：")
+                .font(.headline)
+            
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    Text("1.")
+                    Text("点击下方前往系统设置按钮")
+                }
+                HStack(alignment: .top) {
+                    Text("2.")
+                    Text("在完全磁盘访问部分勾选FileLocker")
+                }
+                HStack(alignment: .top) {
+                    Text("3.")
+                    Text("返回应用继续使用")
+                }
+            }
+            .padding()
+            
+            HStack(spacing: 20) {
+                Button("稍后再说") {
+                    isPresented = false
+                }
+                .buttonStyle(.plain)
+                
+                Button("前往系统设置") {
+                    FullDiskAccessHelper.shared.openFullDiskAccessPreferences()
+                    isPresented = false
+                    FullDiskAccessHelper.shared.hasShownAccessPrompt = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+        .frame(width: 500)
+        .padding()
+    }
+}
+
+struct FileDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    let file: LockedFile
+    @State private var alertMessage: String?
+    @State private var showingAlert = false
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Image(systemName: file.isDirectory ? "folder" : "doc")
+                    .font(.largeTitle)
+                    .foregroundColor(file.isLocked ? .red : .green)
+                
+                VStack(alignment: .leading) {
+                    Text(file.name)
+                        .font(.title)
+                    Text(file.path)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            
+            HStack {
+                Text("锁定状态:")
+                Toggle("", isOn: Binding(
+                    get: { file.isLocked },
+                    set: { newValue in
+                        toggleLockState(to: newValue)
+                    }
+                ))
+                .labelsHidden()
+            }
+            .padding()
+            
+            if file.isLocked {
+                Text("锁定时间: \(file.lockDate, format: .dateTime)")
+                    .font(.caption)
+                    .padding(.horizontal)
+            }
+            
+            Spacer()
+            
+            Button(action: { toggleLockState(to: !file.isLocked) }) {
+                Text(file.isLocked ? "解锁文件" : "锁定文件")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding()
+        }
+        .padding()
+        .frame(minWidth: 400, minHeight: 300)
+        .alert("操作提示", isPresented: $showingAlert) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            if let message = alertMessage {
+                Text(message)
+            }
+        }
+    }
+    
+    private func toggleLockState(to newState: Bool) {
+        do {
+            if newState {
+                // 锁定文件
+                try FileLockerService.shared.lockFile(at: file.path, withBookmark: file.bookmark)
+                withAnimation {
+                    file.isLocked = true
+                    file.lockDate = Date()
+                }
+            } else {
+                // 解锁文件
+                try FileLockerService.shared.unlockFile(at: file.path, withBookmark: file.bookmark)
+                withAnimation {
+                    file.isLocked = false
+                }
+            }
+            
+        } catch FileLockError.fileNotFound {
+            alertMessage = "找不到文件，可能已被移动或删除"
+            showingAlert = true
+        } catch FileLockError.accessDenied {
+            alertMessage = "没有足够权限操作该文件"
+            showingAlert = true
+        } catch FileLockError.bookmarkRestorationFailed {
+            alertMessage = "无法访问文件，书签恢复失败"
+            showingAlert = true
+        } catch {
+            alertMessage = "操作出错: \(error.localizedDescription)"
+            showingAlert = true
+        }
+    }
+}
+
+// struct ContentView: View {
+//     @Environment(\.modelContext) private var modelContext
+//     @Query private var lockedFiles: [LockedFile]
+//     @State private var isShowingFilePicker = false
+//     @State private var isShowingFolderPicker = false
+//     @State private var alertMessage: String?
+//     @State private var showingAlert = false
+//     @State private var isHoveringDropArea = false
+//     @State private var showingFullDiskAccessDialog = false
+//     
+//     var body: some View {
+//         NavigationSplitView {
+//             VStack {
+//                 // 拖放区域
+//                 ZStack {
+//                     RoundedRectangle(cornerRadius: 10)
+//                         .stroke(style: StrokeStyle(lineWidth: 2, dash: [5]))
+//                         .fill(isHoveringDropArea ? Color.blue.opacity(0.3) : Color.gray.opacity(0.3))
+//                         .background(isHoveringDropArea ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
+//                         .frame(height: 100)
+//                     
+//                     Text("拖放文件或文件夹到这里")
+//                         .foregroundColor(isHoveringDropArea ? .blue : .gray)
+//                 }
+//                 .padding()
+//                 .onDrop(of: [.fileURL], isTargeted: $isHoveringDropArea) { providers in
+//                     handleDroppedItems(providers)
+//                     return true
+//                 }
+//                 
+//                 // 文件列表
+//                 List {
+//                     ForEach(lockedFiles) { file in
+//                         NavigationLink {
+//                             FileDetailView(file: file)
+//                         } label: {
+//                             HStack {
+//                                 Image(systemName: file.isDirectory ? "folder" : "doc")
+//                                     .foregroundColor(file.isLocked ? .red : .green)
+//                                 VStack(alignment: .leading) {
+//                                     Text(file.name)
+//                                     Text(file.path)
+//                                         .font(.caption)
+//                                         .foregroundColor(.secondary)
+//                                 }
+//                             }
+//                         }
+//                     }
+//                     .onDelete(perform: deleteFiles)
+//                 }
+//             }
+//             .navigationSplitViewColumnWidth(min: 220, ideal: 250)
+//             .toolbar {
+//                 ToolbarItem {
+//                     Menu {
+//                         Button("添加文件", action: { isShowingFilePicker = true })
+//                         Button("添加文件夹", action: { isShowingFolderPicker = true })
+//                         Divider()
+//                         Button("授予完全磁盘访问权限", action: { showingFullDiskAccessDialog = true })
+//                     } label: {
+//                         Label("添加", systemImage: "plus")
+//                     }
+//                 }
+//             }
+//         } detail: {
+//             Text("选择文件或文件夹查看详情")
+//         }
+//         .fileImporter(
+//             isPresented: $isShowingFilePicker,
+//             allowedContentTypes: [.content, .data, .fileURL],
+//             allowsMultipleSelection: true
+//         ) { result in
+//             handleFileSelection(result, isDirectory: false)
+//         }
+//         .fileImporter(
+//             isPresented: $isShowingFolderPicker,
+//             allowedContentTypes: [.folder],
+//             allowsMultipleSelection: true
+//         ) { result in
+//             handleFileSelection(result, isDirectory: true)
+//         }
+//         .alert("操作提示", isPresented: $showingAlert) {
+//             Button("确定", role: .cancel) {}
+//         } message: {
+//             if let message = alertMessage {
+//                 Text(message)
+//             }
+//         }
+//         .sheet(isPresented: $showingFullDiskAccessDialog) {
+//             FullDiskAccessView(isPresented: $showingFullDiskAccessDialog)
+//         }
+//         .onAppear {
+//             setupNotifications()
+//             
+//             // 检查是否需要显示完全磁盘访问权限提示
+//             if !FullDiskAccessHelper.shared.hasShownAccessPrompt {
+//                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+//                     showingFullDiskAccessDialog = true
+//                 }
+//             }
+//         }
+//         .onDisappear {
+//             NotificationCenter.default.removeObserver(self)
+//         }
+//     }
+//     
+//     // 处理拖放的项目
+//     private func handleDroppedItems(_ providers: [NSItemProvider]) {
+//         for provider in providers {
+//             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+//                 guard error == nil else {
+//                     DispatchQueue.main.async {
+//                         alertMessage = "读取拖放的文件出错: \(error!.localizedDescription)"
+//                         showingAlert = true
+//                     }
+//                     return
+//                 }
+//                 
+//                 guard let data = item as? Data,
+//                       let url = URL(dataRepresentation: data, relativeTo: nil) else {
+//                     return
+//                 }
+//                 
+//                 DispatchQueue.main.async {
+//                     // 判断是文件还是文件夹
+//                     var isDirectory: ObjCBool = false
+//                     if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+//                         processSelectedURL(url, isDirectory: isDirectory.boolValue)
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     
+//     // 设置通知监听器来响应菜单操作
+//     private func setupNotifications() {
+//         NotificationCenter.default.addObserver(
+//             forName: Notification.Name("AddFile"),
+//             object: nil,
+//             queue: .main
+//         ) { _ in
+//             isShowingFilePicker = true
+//         }
+//         
+//         NotificationCenter.default.addObserver(
+//             forName: Notification.Name("AddFolder"),
+//             object: nil,
+//             queue: .main
+//         ) { _ in
+//             isShowingFolderPicker = true
+//         }
+//     }
+//     
+//     private func handleFileSelection(_ result: Result<[URL], Error>, isDirectory: Bool = false) {
+//         switch result {
+//         case .success(let urls):
+//             for selectedURL in urls {
+//                 processSelectedURL(selectedURL, isDirectory: isDirectory)
+//             }
+//         case .failure(let error):
+//             alertMessage = "选择文件出错: \(error.localizedDescription)"
+//             showingAlert = true
+//         }
+//     }
+//     
+//     private func processSelectedURL(_ selectedURL: URL, isDirectory: Bool) {
+//         // 请求文件访问权限
+//         guard selectedURL.startAccessingSecurityScopedResource() else {
+//             alertMessage = "无法访问所选文件或文件夹"
+//             showingAlert = true
+//             return
+//         }
+//         
+//         do {
+//             // 创建书签数据用于持久化访问
+//             let bookmarkData = try FileLockerService.shared.createSecureBookmark(for: selectedURL)
+//             
+//             // 创建新的锁定文件记录
+//             let newFile = LockedFile(path: selectedURL.path, isLocked: true, isDirectory: isDirectory, bookmark: bookmarkData)
+//             
+//             // 锁定文件
+//             try FileLockerService.shared.lockFile(at: selectedURL.path, withBookmark: bookmarkData)
+//             
+//             // 添加到数据库
+//             withAnimation {
+//                 modelContext.insert(newFile)
+//             }
+//         } catch FileLockError.accessDenied {
+//             alertMessage = "没有权限锁定该文件，请确认应用有足够的权限"
+//             showingAlert = true
+//         } catch FileLockError.fileNotFound {
+//             alertMessage = "找不到所选文件"
+//             showingAlert = true
+//         } catch FileLockError.bookmarkCreationFailed {
+//             alertMessage = "创建文件书签失败，无法持久访问文件"
+//             showingAlert = true
+//         } catch {
+//             alertMessage = "锁定文件出错: \(error.localizedDescription)"
+//             showingAlert = true
+//         }
+//         
+//         selectedURL.stopAccessingSecurityScopedResource()
+//     }
+// 
+//     private func deleteFiles(offsets: IndexSet) {
+//         withAnimation {
+//             for index in offsets {
+//                 let file = lockedFiles[index]
+//                 // 在删除记录前先解锁文件
+//                 if file.isLocked {
+//                     do {
+//                         try FileLockerService.shared.unlockFile(at: file.path, withBookmark: file.bookmark)
+//                     } catch {
+//                         alertMessage = "解锁文件失败: \(error.localizedDescription)"
+//                         showingAlert = true
+//                     }
+//                 }
+//                 modelContext.delete(file)
+//             }
+//         }
+//     }
+// }
+// 
+// MARK: - 应用入口
+
+
+struct FileLockerApp: App {
+    @StateObject private var fullDiskAccessState = FullDiskAccessState()
+    
+    var sharedModelContainer: ModelContainer = {
+        let schema = Schema([
+            LockedFile.self,
+        ])
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+
+        do {
+            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+        } catch {
+            fatalError("Could not create ModelContainer: \(error)")
+        }
+    }()
+
+    var body: some Scene {
+        WindowGroup {
+            NewContentView()
+                .frame(minWidth: 800, minHeight: 500)
+                .environmentObject(fullDiskAccessState)
+        }
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("添加文件") {
+                    NotificationCenter.default.post(name: Notification.Name("AddFile"), object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                
+                Button("添加文件夹") {
+                    NotificationCenter.default.post(name: Notification.Name("AddFolder"), object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                
+                Button("授予完全磁盘访问权限") {
+                    FullDiskAccessHelper.shared.openFullDiskAccessPreferences()
+                }
+            }
+        }
+        .modelContainer(sharedModelContainer)
+    }
+}
+
+class FullDiskAccessState: ObservableObject {
+    @Published var hasRequested = FullDiskAccessHelper.shared.hasShownAccessPrompt
+    
+    init() {}
+}
+
+// MARK: - 预览
+
+#Preview {
+    NewContentView()
+        .modelContainer(for: LockedFile.self, inMemory: true)
+} 
