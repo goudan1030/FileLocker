@@ -1,0 +1,54 @@
+# macOS系统文件
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Xcode项目文件
+## 用户设置
+xcuserdata/
+*.xcuserstate
+
+## 项目设置
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.xccheckout
+*.moved-aside
+
+## App打包文件
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift特定
+## 构建生成的包目录
+build/
+DerivedData/
+
+## Swift Package Manager
+.build/
+Package.pins
+Package.resolved
+.swiftpm
+
+# 备份文件
+*.bak
+*.orig
+*~
+
+# 日志文件
+*.log 

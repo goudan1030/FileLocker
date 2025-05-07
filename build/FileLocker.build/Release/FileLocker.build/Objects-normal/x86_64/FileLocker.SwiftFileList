@@ -1,6 +1,11 @@
-/Users/zwd/Downloads/workplace/FileLocker/FileLocker/BrowserViewComponents.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/BookmarkManager.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/FileLockerService.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/FileService.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Utils/Helpers/FullDiskAccessHelper.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Utils/Errors.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewModels/FileLockerViewModel.swift
 /Users/zwd/Downloads/workplace/FileLocker/FileLocker/ContentView.swift
 /Users/zwd/Downloads/workplace/FileLocker/FileLocker/FileLockerMain.swift
 /Users/zwd/Downloads/workplace/FileLocker/FileLocker/Main.swift
-/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewComponents.swift
+/Users/zwd/Downloads/workplace/FileLocker/FileLocker/PermissionHandler.swift
 /Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/DerivedSources/GeneratedAssetSymbols.swift

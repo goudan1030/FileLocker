@@ -9,625 +9,48 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import Foundation
-import CryptoKit
+import AppKit
 
-// MARK: - 数据模型
+// 显式导入需要的服务和模型
+// 临时解决方案，直接引用本地文件而非模块导入
+#if true
+// 修复导入语句，正确引用各个组件
+import Foundation // 确保基础类型已导入
+import SwiftData  // 数据模型支持
+import AppKit     // macOS UI支持
+import SwiftUI    // UI框架
 
-@Model
-final class LockedFile {
-    var path: String
-    var isLocked: Bool
-    var isDirectory: Bool
-    var name: String
-    var lockDate: Date
-    var bookmark: Data? // 添加书签数据以便持久访问文件
-    var isPasswordProtected: Bool // 添加密码保护标志
-    var passwordHash: String? // 存储密码的哈希值，而非明文密码
-    var accessAttempts: Int // 记录访问尝试次数
-    var lastAccessTime: Date? // 最后一次访问时间
-    
-    init(path: String, isLocked: Bool = true, isDirectory: Bool = false, bookmark: Data? = nil) {
-        self.path = path
-        self.isLocked = isLocked
-        self.isDirectory = isDirectory
-        self.name = URL(fileURLWithPath: path).lastPathComponent
-        self.lockDate = Date()
-        self.bookmark = bookmark
-        self.isPasswordProtected = false
-        self.passwordHash = nil
-        self.accessAttempts = 0
-        self.lastAccessTime = nil
-    }
-}
+// 导入重构后的模块
+// Swift不支持子模块导入语法，使用直接导入方式
+// import Models.LockedFile
+// import Utils.Errors
+// import Services.FileLockerService
+// import Views.Components.StepView
+// import Views.Settings.FullDiskAccessView
 
-// 添加密码访问记录模型
-@Model
-final class PasswordAccessLog {
-    var filePath: String
-    var fileName: String
-    var accessTime: Date
-    var isSuccessful: Bool
-    var accessType: String // "unlock", "lock", "view"
-    
-    init(filePath: String, fileName: String, accessTime: Date = Date(), isSuccessful: Bool, accessType: String) {
-        self.filePath = filePath
-        self.fileName = fileName
-        self.accessTime = accessTime
-        self.isSuccessful = isSuccessful
-        self.accessType = accessType
-    }
-}
+// 直接使用文件中定义的类型 
+// LockedFile - 从 Models/LockedFile.swift
+// FileLockerService - 从 Services/FileLockerService.swift
+// FileLockerAccessHelper - 从 Utils/Helpers/FullDiskAccessHelper.swift
+// StepView - 从 Views/Components/StepView.swift
+#endif
 
-// MARK: - 错误类型
-
-enum FileLockError: Error, LocalizedError {
-    case fileNotFound
-    case accessDenied
-    case unknown(String)
-    case bookmarkCreationFailed
-    case bookmarkRestorationFailed
-    
-    var errorDescription: String? {
-        switch self {
-        case .fileNotFound:
-            return "找不到文件，可能已被移动或删除"
-        case .accessDenied:
-            return "没有足够权限操作该文件，请检查是否已获得完全磁盘访问权限"
-        case .bookmarkCreationFailed:
-            return "创建文件书签失败，无法持久访问文件"
-        case .bookmarkRestorationFailed:
-            return "文件书签已失效，无法访问该文件"
-        case .unknown(let message):
-            return "未知错误: \(message)"
-        }
-    }
-}
-
-// MARK: - 服务类
-
-class FileLockerService {
-    static let shared = FileLockerService()
-    
-    private init() {}
-    
-    // 创建安全书签以持久访问文件
-    func createSecureBookmark(for url: URL) throws -> Data {
-        do {
-            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            return bookmarkData
-        } catch {
-            throw FileLockError.bookmarkCreationFailed
-        }
-    }
-    
-    // 从书签恢复URL
-    func resolveSecureBookmark(_ bookmarkData: Data) throws -> URL {
-        var isStale = false
-        do {
-            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
-            return url
-        } catch {
-            throw FileLockError.bookmarkRestorationFailed
-        }
-    }
-    
-    // 生成密码哈希
-    func hashPassword(_ password: String) -> String {
-        // 简单哈希实现，实际应用中应使用更安全的哈希算法和加盐
-        let passwordData = password.data(using: .utf8)!
-        let hash = SHA256.hash(data: passwordData)
-        return hash.compactMap { String(format: "%02x", $0) }.joined()
-    }
-    
-    // 验证密码
-    func verifyPassword(_ password: String, against hash: String) -> Bool {
-        let inputHash = hashPassword(password)
-        return inputHash == hash
-    }
-    
-    // 锁定文件并设置密码保护
-    func lockFileWithPassword(at path: String, password: String, withBookmark bookmark: Data? = nil) throws -> String {
-        // 先常规锁定文件
-        try lockFile(at: path, withBookmark: bookmark)
-        
-        // 生成密码哈希并返回
-        return hashPassword(password)
-    }
-    
-    // 用密码解锁文件
-    func unlockFileWithPassword(at path: String, password: String, against hash: String, withBookmark bookmark: Data? = nil) throws -> Bool {
-        // 验证密码
-        if !verifyPassword(password, against: hash) {
-            return false
-        }
-        
-        // 密码验证通过，解锁文件
-        try unlockFile(at: path, withBookmark: bookmark)
-        return true
-    }
-    
-    func lockFile(at path: String, withBookmark bookmark: Data? = nil) throws {
-        print("尝试锁定文件: \(path)")
-        var url: URL
-        var shouldStopAccessing = false
-        
-        // 尝试通过书签访问文件
-        if let bookmarkData = bookmark {
-            do {
-                url = try resolveSecureBookmark(bookmarkData)
-                if url.startAccessingSecurityScopedResource() {
-                    shouldStopAccessing = true
-                    print("通过书签成功访问文件")
-                }
-            } catch {
-                print("书签恢复失败，尝试直接访问路径: \(error.localizedDescription)")
-                // 如果书签无效，回退到直接路径
-                url = URL(fileURLWithPath: path)
-            }
-        } else {
-            url = URL(fileURLWithPath: path)
-            print("使用直接路径访问文件")
-        }
-        
-        var resourceValues = URLResourceValues()
-        resourceValues.isUserImmutable = true
-        
-        do {
-            var mutableURL = url
-            try mutableURL.setResourceValues(resourceValues)
-            print("成功锁定文件: \(path)")
-        } catch {
-            if let nsError = error as NSError? {
-                switch nsError.code {
-                case NSFileNoSuchFileError:
-                    print("找不到文件: \(path)")
-                    throw FileLockError.fileNotFound
-                case NSFileWriteNoPermissionError:
-                    print("没有写入权限: \(path)")
-                    throw FileLockError.accessDenied
-                default:
-                    print("未知错误: \(nsError.code) - \(error.localizedDescription)")
-                    throw FileLockError.unknown(error.localizedDescription)
-                }
-            } else {
-                print("未分类错误: \(error.localizedDescription)")
-                throw FileLockError.unknown(error.localizedDescription)
-            }
-        }
-        
-        if shouldStopAccessing {
-            url.stopAccessingSecurityScopedResource()
-            print("已停止安全资源访问")
-        }
-    }
-    
-    func unlockFile(at path: String, withBookmark bookmark: Data? = nil) throws {
-        print("尝试解锁文件: \(path)")
-        var url: URL
-        var shouldStopAccessing = false
-        
-        // 尝试通过书签访问文件
-        if let bookmarkData = bookmark {
-            do {
-                url = try resolveSecureBookmark(bookmarkData)
-                if url.startAccessingSecurityScopedResource() {
-                    shouldStopAccessing = true
-                    print("通过书签成功访问文件")
-                }
-            } catch {
-                print("书签恢复失败，尝试直接访问路径: \(error.localizedDescription)")
-                // 如果书签无效，回退到直接路径
-                url = URL(fileURLWithPath: path)
-            }
-        } else {
-            url = URL(fileURLWithPath: path)
-            print("使用直接路径访问文件")
-        }
-        
-        var resourceValues = URLResourceValues()
-        resourceValues.isUserImmutable = false
-        
-        do {
-            var mutableURL = url
-            try mutableURL.setResourceValues(resourceValues)
-            print("成功解锁文件: \(path)")
-        } catch {
-            if let nsError = error as NSError? {
-                switch nsError.code {
-                case NSFileNoSuchFileError:
-                    print("找不到文件: \(path)")
-                    throw FileLockError.fileNotFound
-                case NSFileWriteNoPermissionError:
-                    print("没有写入权限: \(path)")
-                    throw FileLockError.accessDenied
-                default:
-                    print("未知错误: \(nsError.code) - \(error.localizedDescription)")
-                    throw FileLockError.unknown(error.localizedDescription)
-                }
-            } else {
-                print("未分类错误: \(error.localizedDescription)")
-                throw FileLockError.unknown(error.localizedDescription)
-            }
-        }
-        
-        if shouldStopAccessing {
-            url.stopAccessingSecurityScopedResource()
-            print("已停止安全资源访问")
-        }
-    }
-    
-    func isFileLocked(at path: String, withBookmark bookmark: Data? = nil) -> Bool {
-        var url: URL
-        var shouldStopAccessing = false
-        
-        // 尝试通过书签访问文件
-        if let bookmarkData = bookmark {
-            do {
-                url = try resolveSecureBookmark(bookmarkData)
-                if url.startAccessingSecurityScopedResource() {
-                    shouldStopAccessing = true
-                }
-            } catch {
-                // 如果书签无效，回退到直接路径
-                url = URL(fileURLWithPath: path)
-            }
-        } else {
-            url = URL(fileURLWithPath: path)
-        }
-        
-        do {
-            let resourceValues = try url.resourceValues(forKeys: [.isUserImmutableKey])
-            let isLocked = resourceValues.isUserImmutable ?? false
-            
-            if shouldStopAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-            
-            return isLocked
-        } catch {
-            print("检查文件状态错误: \(error.localizedDescription)")
-            
-            if shouldStopAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-            
-            return false
-        }
-    }
-}
-
-// MARK: - 完全磁盘访问权限助手
-
-class FullDiskAccessHelper {
-    static let shared = FullDiskAccessHelper()
-    private let hasShownAccessPromptKey = "hasShownFullDiskAccessPrompt"
-    
-    private init() {
-        createInfoPlistIfNeeded()
-    }
-    
-    // 创建Info.plist文件(如果需要)
-    private func createInfoPlistIfNeeded() {
-        // 获取应用的包路径
-        let bundlePath = Bundle.main.bundlePath
-        let infoPlistPath = bundlePath + "/Contents/Info.plist"
-        
-        // 检查Info.plist是否存在
-        if !FileManager.default.fileExists(atPath: infoPlistPath) {
-            print("Info.plist不存在，尝试创建")
-            
-            // 创建基本的Info.plist内容
-            let infoPlistDict: [String: Any] = [
-                "NSFullDiskAccessUsageDescription": "FileLocker需要完全磁盘访问权限来保护您的文件免受意外删除",
-                "CFBundleIdentifier": "com.example.FileLocker",
-                "CFBundleName": "FileLocker",
-                "CFBundleDisplayName": "FileLocker",
-                "CFBundleVersion": "1.0",
-                "CFBundleShortVersionString": "1.0"
-            ]
-            
-            // 尝试创建Info.plist文件
-            if let plistData = try? PropertyListSerialization.data(fromPropertyList: infoPlistDict, format: .xml, options: 0) {
-                do {
-                    try plistData.write(to: URL(fileURLWithPath: infoPlistPath))
-                    print("成功创建Info.plist文件")
-                } catch {
-                    print("创建Info.plist失败: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-    
-    var hasShownAccessPrompt: Bool {
-        get {
-            return UserDefaults.standard.bool(forKey: hasShownAccessPromptKey)
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: hasShownAccessPromptKey)
-        }
-    }
-    
-    // 主动触发完全磁盘访问权限请求 - 增强版
-    func requestFullDiskAccess() {
-        // 确保Info.plist中有必要的权限描述
-        createInfoPlistIfNeeded()
-        
-        print("开始请求完全磁盘访问权限...")
-        
-        // 尝试访问一些需要完全磁盘访问的位置
-        let systemPaths = [
-            "/Library",
-            "/Library/Application Support",
-            "/System/Library/CoreServices",
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path,
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
-        ]
-        
-        var accessiblePaths = 0
-        
-        // 对多个系统路径进行访问尝试，增加应用出现在隐私设置中的几率
-        for path in systemPaths {
-            do {
-                let _ = try FileManager.default.contentsOfDirectory(atPath: path)
-                print("已有对 \(path) 的访问权限")
-                accessiblePaths += 1
-            } catch {
-                print("尝试访问 \(path) 时出错: \(error.localizedDescription)")
-            }
-        }
-        
-        print("可访问路径: \(accessiblePaths)/\(systemPaths.count)")
-        
-        // 特别尝试访问下载文件夹
-        let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        if let url = downloadsURL {
-            do {
-                // 尝试创建临时文件测试写入权限
-                let temporaryFileURL = url.appendingPathComponent("filelocker_permission_test_\(Int.random(in: 1000...9999)).tmp")
-                let testString = "权限测试"
-                try testString.write(to: temporaryFileURL, atomically: true, encoding: .utf8)
-                
-                // 成功创建，尝试删除
-                print("成功在下载文件夹创建临时文件，确认有写入权限")
-                try FileManager.default.removeItem(at: temporaryFileURL)
-                print("成功删除测试文件")
-            } catch {
-                print("无法在下载文件夹创建测试文件: \(error.localizedDescription)")
-            }
-        }
-        
-        // 在尝试访问受限目录后，打开系统偏好设置
-        openFullDiskAccessPreferences()
-        hasShownAccessPrompt = true
-        
-        // 显示详细指导
-        showDetailedGuidance()
-    }
-    
-    // 显示详细的设置指导
-    private func showDetailedGuidance() {
-        let alert = NSAlert()
-        alert.messageText = "如何授予FileLocker完全磁盘访问权限"
-        alert.informativeText = """
-        1. 在系统设置中，点击"隐私与安全性"
-        2. 在左侧列表中，选择"完全磁盘访问权限"
-        3. 点击左下角的锁图标并解锁
-        4. 点击"+"按钮添加应用
-        5. 导航到应用程序文件夹，选择FileLocker应用
-        6. 勾选FileLocker旁边的复选框
-        
-        注意：如果在列表中没有看到FileLocker，请先通过Finder将应用从下载文件夹移动到应用程序文件夹，然后重新打开它。
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "了解")
-        alert.addButton(withTitle: "复制这些步骤")
-        
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            // 复制步骤到剪贴板
-            let steps = """
-            如何授予FileLocker完全磁盘访问权限:
-            1. 在系统设置中，点击"隐私与安全性"
-            2. 在左侧列表中，选择"完全磁盘访问权限"
-            3. 点击左下角的锁图标并解锁
-            4. 点击"+"按钮添加应用
-            5. 导航到应用程序文件夹，选择FileLocker应用
-            6. 勾选FileLocker旁边的复选框
-            """
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(steps, forType: .string)
-        }
-    }
-    
-    // 打开系统偏好设置的完全磁盘访问面板
-    func openFullDiskAccessPreferences() {
-        let privacyPrefPanePath = "/System/Library/PreferencePanes/Security.prefPane"
-        
-        if FileManager.default.fileExists(atPath: privacyPrefPanePath) {
-            // 使用旧的方式打开
-            let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
-            }
-        } else {
-            // 尝试使用新的macOS设置方式
-            let venturaPrefPath = "/System/Applications/System Settings.app"
-            if FileManager.default.fileExists(atPath: venturaPrefPath) {
-                // macOS Ventura及以上版本
-                let url = URL(fileURLWithPath: venturaPrefPath)
-                NSWorkspace.shared.open(url)
-            } else {
-                // 尝试打开系统偏好设置
-                let prefURL = URL(fileURLWithPath: "/System/Applications/System Preferences.app")
-                NSWorkspace.shared.open(prefURL)
-            }
-        }
-    }
-    
-    // 检查是否可能有完全磁盘访问
-    func checkFullDiskAccess() -> Bool {
-        // 尝试访问用户下载文件夹
-        let userHomeDirectory = NSHomeDirectory()
-        let downloadsPath = userHomeDirectory + "/Downloads"
-        
-        do {
-            let _ = try FileManager.default.contentsOfDirectory(atPath: downloadsPath)
-            print("可以访问用户下载文件夹，已获得完全磁盘访问权限")
-            return true
-        } catch {
-            print("无法访问用户下载文件夹: \(error.localizedDescription)")
-        }
-        
-        // 备用方法：尝试访问其他系统目录
-        let testPaths = [
-            "/Library/Application Support",
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
-        ]
-        
-        for path in testPaths {
-            do {
-                let _ = try FileManager.default.contentsOfDirectory(atPath: path)
-                print("可以访问系统目录: \(path)，已获得完全磁盘访问权限")
-                return true
-            } catch {
-                print("无法访问系统目录: \(path)")
-            }
-        }
-        
-        print("所有测试路径都无法访问，未获得完全磁盘访问权限")
-        return false
-    }
-}
+// MARK: - 架构说明
+// 本项目已重构，将代码分离到以下文件中：
+// 1. FileService.swift - 负责文件操作（锁定、解锁、状态检查）
+// 2. BookmarkManager.swift - 负责书签管理（创建、恢复、更新）
+// 3. PermissionHandler.swift - 负责权限处理（检测、请求、引导）
+// 4. Models/LockedFile.swift - 数据模型定义
+// 5. 错误定义目前分布在多个文件中，需在项目结构调整后统一
+// 主文件保留UI相关代码
 
 // MARK: - 视图
 
-struct FullDiskAccessView: View {
-    @Binding var isPresented: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // 顶部图标
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(colors: [.blue.opacity(0.8), .teal], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                    .frame(width: 100, height: 100)
-                    .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 5)
-                
-                Image(systemName: "folder.badge.gearshape")
-                    .font(.system(size: 50))
-                    .foregroundColor(.white)
-            }
-            .padding(.top, 40)
-            .padding(.bottom, 20)
-            
-            // 标题和说明
-            Text("完全磁盘访问权限")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(.linearGradient(colors: [.primary, .primary.opacity(0.8)], startPoint: .top, endPoint: .bottom))
-                .padding(.bottom, 10)
-            
-            Text("FileLocker需要完全磁盘访问权限才能锁定和保护您的重要文件。\n\n没有这个权限，应用将无法正常保护您的文件。")
-                .font(.system(size: 16))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 40)
-                .padding(.bottom, 30)
-            
-            // 步骤卡片
-            VStack(alignment: .leading, spacing: 0) {
-                Text("请按照以下步骤授予权限")
-                    .font(.system(size: 18, weight: .semibold))
-                    .padding(.bottom, 16)
-                
-                VStack(spacing: 20) {
-                    StepView(number: 1, text: "点击下方前往系统设置按钮")
-                    StepView(number: 2, text: "点击左下方锁定图标并解锁")
-                    StepView(number: 3, text: "在左侧选择完全磁盘访问权限")
-                    StepView(number: 4, text: "在右侧列表中勾选FileLocker应用")
-                    StepView(number: 5, text: "返回应用并点击检查权限状态")
-                }
-            }
-            .padding(25)
-            .frame(maxWidth: 450)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(colorScheme == .dark ? Color.black.opacity(0.2) : Color.white)
-                    .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 5)
-            )
-            .padding(.horizontal, 30)
-            .padding(.bottom, 40)
-            
-            // 底部按钮
-            HStack(spacing: 20) {
-                Button("稍后再说") {
-                    isPresented = false
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                .background(
-                    Capsule()
-                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                )
-                .foregroundColor(.secondary)
-                
-                Button("前往系统设置") {
-                    FullDiskAccessHelper.shared.openFullDiskAccessPreferences()
-                    isPresented = false
-                    FullDiskAccessHelper.shared.hasShownAccessPrompt = true
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                .background(
-                    Capsule()
-                        .fill(
-                            LinearGradient(colors: [.blue, .blue.opacity(0.8)], startPoint: .top, endPoint: .bottom)
-                        )
-                )
-                .foregroundColor(.white)
-                .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
-            }
-            .padding(.bottom, 40)
-        }
-        .frame(width: 550)
-        .background(colorScheme == .dark ? Color.black.opacity(0.2) : Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
-    }
-}
+// FullDiskAccessView已移动到 Views/Settings/FullDiskAccessView.swift
+// 请使用 import Views.Settings.SettingsFullDiskAccessView 导入
+// 因模块导入问题，暂时使用全局引用 SettingsFullDiskAccessView
 
-// 步骤视图组件
-struct StepView: View {
-    let number: Int
-    let text: String
-    
-    var body: some View {
-        HStack(alignment: .center, spacing: 15) {
-            // 步骤数字
-            ZStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.2))
-                    .frame(width: 32, height: 32)
-                
-                Text("\(number)")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.blue)
-            }
-            
-            // 步骤文本
-            Text(text)
-                .font(.system(size: 15))
-                .foregroundColor(.primary)
-            
-            Spacer()
-        }
-    }
-}
+// 步骤视图组件已移动到 Views/Components/StepView.swift
 
 struct FileDetailView: View {
     @Environment(\.modelContext) private var modelContext
@@ -970,7 +393,7 @@ struct PermissionView: View {
                         // 检查权限
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                             let previousAccess = hasAccess
-                            hasAccess = FullDiskAccessHelper.shared.checkFullDiskAccess()
+                            hasAccess = FileLockerAccessHelper.shared.hasFileAccess()
                             isCheckingAccess = false
                             
                             // 检查结果提示
@@ -999,7 +422,7 @@ struct PermissionView: View {
             .background(colorScheme == .dark ? Color.clear : Color.white)
         }
         .sheet(isPresented: $showingFullDiskAccessDialog) {
-            FullDiskAccessView(isPresented: $showingFullDiskAccessDialog)
+            SettingsFullDiskAccessView(isPresented: $showingFullDiskAccessDialog)
         }
         .alert("权限状态", isPresented: $showSuccessAlert) {
             Button("确定", role: .cancel) {}
@@ -1008,10 +431,10 @@ struct PermissionView: View {
         }
         .onAppear {
             // 检查当前权限状态
-            hasAccess = FullDiskAccessHelper.shared.checkFullDiskAccess()
+            hasAccess = FileLockerAccessHelper.shared.hasFileAccess()
             
             // 只有在没有权限时才显示权限请求弹窗
-            if !hasAccess && !FullDiskAccessHelper.shared.hasShownAccessPrompt {
+            if !hasAccess && !FileLockerAccessHelper.shared.hasShownAccessPrompt {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     showingFullDiskAccessDialog = true
                 }
@@ -1417,6 +840,20 @@ class FileSystemBrowser: ObservableObject {
 
     // 浏览指定文件夹
     func browseLocation(_ url: URL) {
+        // 验证URL是否有效
+        guard url.isFileURL else {
+            errorMessage = "无效的文件URL"
+            return
+        }
+        
+        // 验证是否是目录
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            errorMessage = "指定的路径不是一个有效的目录"
+            return
+        }
+        
         // 保存到最近访问位置
         saveRecentLocation(url)
         
@@ -1425,8 +862,6 @@ class FileSystemBrowser: ObservableObject {
         
         // 加载目录内容
         loadDirectory(url)
-        
-        // 注意：移除了对cleanupUnrelatedPanels的调用，让分栏保持不变，除非clearBrowserPanels被明确调用
     }
     
     // 清除与指定路径无关的分栏
@@ -1515,51 +950,40 @@ class FileSystemBrowser: ObservableObject {
     private func getDownloadsFolder() -> URL? {
         print("尝试获取下载文件夹路径...")
         
-        // 使用直接路径获取真实的Downloads文件夹（非沙盒路径）
-        let userHomeDirectory = NSHomeDirectory()
+        // 首先尝试使用FileManager的标准目录（沙盒适用）
+        if let containerDownloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first {
+            print("通过FileManager标准目录获取路径: \(containerDownloadsURL.path)")
+            
+            // 检查是否真的能访问
+            if FileManager.default.fileExists(atPath: containerDownloadsURL.path) {
+            do {
+                    let _ = try FileManager.default.contentsOfDirectory(atPath: containerDownloadsURL.path)
+                    print("成功验证了FileManager返回的下载文件夹访问权限")
+                    return containerDownloadsURL
+            } catch {
+                    print("通过FileManager获取的下载文件夹访问失败: \(error.localizedDescription)")
+                    // 继续尝试其他方法
+                }
+            }
+        }
+        
+        // 尝试通过用户主目录构建下载路径
+        let userHomeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
         let downloadsPath = userHomeDirectory + "/Downloads"
-        print("尝试使用真实用户路径: \(downloadsPath)")
         
         if FileManager.default.fileExists(atPath: downloadsPath) {
             // 检查是否真的能访问
             do {
                 let _ = try FileManager.default.contentsOfDirectory(atPath: downloadsPath)
-                print("通过真实路径成功访问下载文件夹")
+                print("通过用户主目录成功访问下载文件夹")
                 return URL(fileURLWithPath: downloadsPath)
             } catch {
-                print("虽然路径存在，但访问失败: \(error.localizedDescription)")
+                print("通过用户主目录访问下载文件夹失败: \(error.localizedDescription)")
             }
         }
         
-        // 尝试通过固定路径获取
-        let downloadsURL = URL(fileURLWithPath: "/Users/\(NSUserName())/Downloads")
-        print("尝试使用固定用户路径: \(downloadsURL.path)")
-        if FileManager.default.fileExists(atPath: downloadsURL.path) {
-            do {
-                let _ = try FileManager.default.contentsOfDirectory(atPath: downloadsURL.path)
-                print("成功通过固定用户路径访问下载文件夹")
-                return downloadsURL
-            } catch {
-                print("通过固定路径访问失败: \(error.localizedDescription)")
-            }
-        }
-        
-        // 如果以上方法都失败，尝试使用FileManager的标准目录（可能会返回沙盒路径）
-        if let containerDownloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first {
-            print("通过FileManager标准目录获取路径: \(containerDownloadsURL.path)")
-            
-            // 检查是否真的能访问
-            do {
-                let _ = try FileManager.default.contentsOfDirectory(atPath: containerDownloadsURL.path)
-                print("成功验证了FileManager返回的下载文件夹访问权限")
-                return containerDownloadsURL
-            } catch {
-                print("虽然获取到了路径，但访问失败: \(error.localizedDescription)")
-            }
-        }
-        
-        // 都失败了
-        print("所有获取下载文件夹的方法都失败了")
+        // 所有方法都失败了
+        print("无法获取下载文件夹")
         return nil
     }
     
@@ -1629,20 +1053,30 @@ class FileSystemBrowser: ObservableObject {
         let fullPath = url.path
         print("使用完整路径: \(fullPath)")
         
-        do {
-            // 检查目录是否存在且可访问
+        // 验证URL是否有效
+        guard url.isFileURL else {
+            DispatchQueue.main.async {
+                self.errorMessage = "无效的文件URL"
+                self.isLoading = false
+            }
+            return
+        }
+        
+        // 验证是否是目录
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir),
                   isDir.boolValue else {
-                errorMessage = "指定的路径不是一个有效的目录"
-                print("路径无效或不是目录: \(fullPath)")
                 DispatchQueue.main.async {
+                self.errorMessage = "指定的路径不是一个有效的目录"
                     self.isLoading = false
                 }
                 return
             }
             
-            // 不依赖安全书签，直接尝试强制访问目录
+        // 使用后台线程执行文件操作，避免阻塞UI
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // 不依赖安全书签，直接尝试访问目录
             print("直接尝试访问目录: \(fullPath)")
             let directoryContents = try FileManager.default.contentsOfDirectory(
                 atPath: fullPath
@@ -1658,7 +1092,14 @@ class FileSystemBrowser: ObservableObject {
                     continue
                 }
                 
+                    // 构建完整路径
                 let itemPath = fullPath + "/" + filename
+                    
+                    // 验证路径有效性
+                    guard FileManager.default.fileExists(atPath: itemPath) else {
+                        continue
+                    }
+                    
                 let itemURL = URL(fileURLWithPath: itemPath)
                 let item = FileSystemItem(url: itemURL)
                 items.append(item)
@@ -1697,7 +1138,7 @@ class FileSystemBrowser: ObservableObject {
                 case NSFileReadNoSuchFileError:
                     detailedMessage = "找不到指定的文件夹，可能已被移动或删除"
                 case NSFileReadNoPermissionError:
-                    detailedMessage = "没有读取文件夹权限，请确认已授予应用完全磁盘访问权限"
+                        detailedMessage = "没有读取文件夹权限"
                 case NSFileReadInvalidFileNameError:
                     detailedMessage = "文件夹路径无效"
                 default:
@@ -1709,12 +1150,6 @@ class FileSystemBrowser: ObservableObject {
                 self.currentItems = []
                 self.errorMessage = detailedMessage
                 self.isLoading = false  // 加载失败，同样完成
-            }
-            
-            // 尝试请求访问权限
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                if !FullDiskAccessHelper.shared.hasShownAccessPrompt {
-                    FullDiskAccessHelper.shared.requestFullDiskAccess()
                 }
             }
         }
@@ -1799,10 +1234,6 @@ struct FileItemRowView: View {
     @Binding var expandedItems: Set<UUID>
     let onToggleExpand: (FileSystemItem) -> Void
     let onLockItem: (FileSystemItem) -> Void
-    @State private var showingPasswordDialog = false
-    @State private var password = ""
-    @State private var confirmPassword = ""
-    @Environment(\.modelContext) private var modelContext
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1840,13 +1271,7 @@ struct FileItemRowView: View {
                     Button(action: {
                         onLockItem(item)
                     }) {
-                        Label("常规锁定", systemImage: "lock")
-                    }
-                    
-                    Button(action: {
-                        showingPasswordDialog = true
-                    }) {
-                        Label("密码锁定", systemImage: "lock.shield")
+                        Label("锁定", systemImage: "lock")
                     }
                     
                     if item.isDirectory {
@@ -1882,118 +1307,6 @@ struct FileItemRowView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingPasswordDialog) {
-            PasswordLockDialogView(
-                password: $password,
-                confirmPassword: $confirmPassword,
-                onSubmit: {
-                    lockWithPassword()
-                }
-            )
-        }
-    }
-    
-    private func lockWithPassword() {
-        guard !password.isEmpty, password == confirmPassword else { return }
-        
-        do {
-            // 创建书签
-            let bookmarkData = try FileLockerService.shared.createSecureBookmark(for: item.url)
-            
-            // 生成密码哈希
-            let passwordHash = FileLockerService.shared.hashPassword(password)
-            
-            // 创建新的锁定文件记录
-            let newFile = LockedFile(
-                path: item.url.path, 
-                isLocked: true, 
-                isDirectory: item.isDirectory, 
-                bookmark: bookmarkData
-            )
-            
-            // 设置密码保护相关属性
-            newFile.isPasswordProtected = true
-            newFile.passwordHash = passwordHash
-            newFile.lastAccessTime = Date()
-            
-            // 锁定文件
-            try FileLockerService.shared.lockFile(at: item.url.path, withBookmark: bookmarkData)
-            
-            // 添加到数据库
-            modelContext.insert(newFile)
-            
-            // 添加访问日志
-            let log = PasswordAccessLog(
-                filePath: item.url.path,
-                fileName: item.name,
-                isSuccessful: true,
-                accessType: "password_set"
-            )
-            modelContext.insert(log)
-            
-            // 清空密码
-            password = ""
-            confirmPassword = ""
-            
-        } catch {
-            print("密码锁定文件失败: \(error.localizedDescription)")
-        }
-    }
-}
-
-// 密码锁定对话框
-struct PasswordLockDialogView: View {
-    @Binding var password: String
-    @Binding var confirmPassword: String
-    let onSubmit: () -> Void
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("设置密码锁定")
-                .font(.headline)
-                .padding(.top, 20)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("请输入密码")
-                    .font(.system(size: 13))
-                
-                SecureField("密码", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-                
-                Text("请确认密码")
-                    .font(.system(size: 13))
-                
-                SecureField("确认密码", text: $confirmPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-            }
-            
-            Text("提示: 密码锁定的文件，需要输入正确密码才能解锁访问")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-            
-            HStack(spacing: 12) {
-                Button("取消") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-                
-                Button("确定") {
-                    onSubmit()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(password.isEmpty || confirmPassword.isEmpty || password != confirmPassword)
-            }
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-        }
-        .frame(width: 300)
     }
 }
 
@@ -2092,7 +1405,7 @@ struct GlobalFileBrowserView: View {
                         .buttonStyle(.bordered)
                         
                         Button("前往系统设置") {
-                            FullDiskAccessHelper.shared.requestFullDiskAccess()
+                            FileLockerAccessHelper.shared.openSystemSettings(panel: "Security")
                         }
                         .buttonStyle(.borderedProminent)
                     }
@@ -3014,13 +2327,6 @@ struct ContentView: View {
     @State private var selectedFile: LockedFile?
     @State private var searchText = ""
     
-    // 密码保护相关状态
-    @State private var showingPasswordDialog = false
-    @State private var showingPasswordPrompt = false
-    @State private var showingPasswordSettings = false
-    @State private var password = ""
-    @State private var confirmPassword = ""
-    
     var filteredFiles: [LockedFile] {
         if searchText.isEmpty {
             return lockedFiles
@@ -3036,7 +2342,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // 顶部TabBar
             HStack(alignment: .center, spacing: 4) {
-                ForEach(0..<5) { index in  // 修改为5个功能标签
+                ForEach(0..<4) { index in
                     let (title, icon) = functionInfo(for: index)
                     TabBarItem(title: title, icon: icon, isSelected: selectedFunction == index) {
                         withAnimation {
@@ -3086,8 +2392,6 @@ struct ContentView: View {
                     PermissionView()
                 case 3:
                     aboutView
-                case 4:
-                    SecurityView()  // 添加安全视图
                 default:
                     fileLockView
                 }
@@ -3121,13 +2425,13 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingFullDiskAccessDialog) {
-            FullDiskAccessView(isPresented: $showingFullDiskAccessDialog)
+            SettingsFullDiskAccessView(isPresented: $showingFullDiskAccessDialog)
         }
         .onAppear {
             setupNotifications()
             
             // 检查是否需要显示完全磁盘访问权限提示
-            if !FullDiskAccessHelper.shared.hasShownAccessPrompt {
+            if !FileLockerAccessHelper.shared.hasShownAccessPrompt {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     showingFullDiskAccessDialog = true
                 }
@@ -3147,34 +2451,6 @@ struct ContentView: View {
             if newValue {
                 showNativeFilePicker(isDirectory: true)
             }
-        }
-        .sheet(isPresented: $showingPasswordDialog) {
-            PasswordDialogView(
-                password: $password,
-                confirmPassword: $confirmPassword,
-                onSubmit: addPasswordProtection,
-                minLength: 6,
-                requireSpecialChars: true,
-                requireNumbers: true
-            )
-        }
-        .sheet(isPresented: $showingPasswordPrompt) {
-            PasswordPromptView(
-                password: $password,
-                onSubmit: {
-                    verifyPasswordAndUnlock()
-                }
-            )
-        }
-        .sheet(isPresented: $showingPasswordSettings) {
-            PasswordSettingsView(
-                file: selectedFile!,
-                modelContext: modelContext,
-                onPasswordRemoved: {
-                    alertMessage = "密码保护已移除"
-                    showingAlert = true
-                }
-            )
         }
     }
     
@@ -3213,7 +2489,6 @@ struct ContentView: View {
         case 1: return ("全局浏览", "globe")
         case 2: return ("权限检查", "shield")
         case 3: return ("关于", "info.circle")
-        case 4: return ("安全", "lock.shield")  // 添加安全功能
         default: return ("", "")
         }
     }
@@ -3567,6 +2842,11 @@ struct ContentView: View {
             return
         }
         
+        defer {
+            // 确保在函数结束时停止访问，无论是成功还是发生错误
+            selectedURL.stopAccessingSecurityScopedResource()
+        }
+        
         do {
             // 创建书签数据用于持久化访问
             let bookmarkData = try FileLockerService.shared.createSecureBookmark(for: selectedURL)
@@ -3594,8 +2874,6 @@ struct ContentView: View {
             alertMessage = "锁定文件出错: \(error.localizedDescription)"
             showingAlert = true
         }
-        
-        selectedURL.stopAccessingSecurityScopedResource()
     }
 
     private func deleteFiles(offsets: IndexSet) {
@@ -3620,16 +2898,29 @@ struct ContentView: View {
     private func handleDroppedItems(_ providers: [NSItemProvider]) {
         for provider in providers {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
-                guard error == nil else {
+                // 检查错误
+                if let error = error {
                     DispatchQueue.main.async {
-                        alertMessage = "读取拖放的文件出错: \(error!.localizedDescription)"
-                        showingAlert = true
+                        self.alertMessage = "读取拖放的文件出错: \(error.localizedDescription)"
+                        self.showingAlert = true
                     }
                     return
                 }
                 
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                // 安全地处理可选值
+                guard let data = item as? Data else {
+                    DispatchQueue.main.async {
+                        self.alertMessage = "无法读取文件数据"
+                        self.showingAlert = true
+                    }
+                    return
+                }
+                
+                guard let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                    DispatchQueue.main.async {
+                        self.alertMessage = "无法解析文件URL"
+                        self.showingAlert = true
+                    }
                     return
                 }
                 
@@ -3637,7 +2928,10 @@ struct ContentView: View {
                     // 判断是文件还是文件夹
                     var isDirectory: ObjCBool = false
                     if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
-                        processSelectedURL(url, isDirectory: isDirectory.boolValue)
+                        self.processSelectedURL(url, isDirectory: isDirectory.boolValue)
+                    } else {
+                        self.alertMessage = "文件不存在或无法访问"
+                        self.showingAlert = true
                     }
                 }
             }
@@ -3650,6 +2944,7 @@ struct ContentView: View {
             // 在删除记录前先解锁文件（如果需要）
             if file.isLocked {
                 do {
+                    // 如果书签存在才使用
                     try FileLockerService.shared.unlockFile(at: file.path, withBookmark: file.bookmark)
                 } catch {
                     alertMessage = "解锁文件失败: \(error.localizedDescription)"
@@ -3703,109 +2998,6 @@ struct ContentView: View {
             showingAlert = true
         }
     }
-    
-    // 密码保护相关方法
-    private func showPasswordProtectionDialog() {
-        password = ""
-        confirmPassword = ""
-        showingPasswordDialog = true
-    }
-    
-    private func showPasswordSettingsDialog() {
-        showingPasswordSettings = true
-    }
-    
-    private func promptPasswordForUnlock(_ file: LockedFile) {
-        password = ""
-        selectedFile = file
-        showingPasswordPrompt = true
-    }
-    
-    private func addPasswordProtection() {
-        guard let file = selectedFile else { return }
-        
-        // 生成密码哈希
-        let passwordHash = FileLockerService.shared.hashPassword(password)
-        
-        // 设置密码保护相关属性
-        file.isPasswordProtected = true
-        file.passwordHash = passwordHash
-        file.lastAccessTime = Date()
-        
-        // 添加访问日志
-        let log = PasswordAccessLog(
-            filePath: file.path,
-            fileName: file.name,
-            isSuccessful: true,
-            accessType: "password_set"
-        )
-        modelContext.insert(log)
-        
-        // 清空密码
-        password = ""
-        confirmPassword = ""
-        
-        alertMessage = "密码保护已成功添加"
-        showingAlert = true
-    }
-    
-    private func verifyPasswordAndUnlock() {
-        guard let file = selectedFile, file.isPasswordProtected else { return }
-        
-        // 增加访问尝试计数
-        file.accessAttempts += 1
-        
-        // 验证密码
-        if let hash = file.passwordHash, FileLockerService.shared.verifyPassword(password, against: hash) {
-            // 密码正确，解锁文件
-            do {
-                try FileLockerService.shared.unlockFile(at: file.path, withBookmark: file.bookmark)
-                
-                // 更新文件状态
-                file.isLocked = false
-                file.lastAccessTime = Date()
-                
-                // 记录成功访问
-                let log = PasswordAccessLog(
-                    filePath: file.path,
-                    fileName: file.name,
-                    isSuccessful: true,
-                    accessType: "unlock"
-                )
-                modelContext.insert(log)
-                
-                alertMessage = "文件已解锁"
-                showingAlert = true
-            } catch {
-                // 记录失败访问
-                let log = PasswordAccessLog(
-                    filePath: file.path,
-                    fileName: file.name,
-                    isSuccessful: false,
-                    accessType: "unlock"
-                )
-                modelContext.insert(log)
-                
-                alertMessage = "解锁文件失败: \(error.localizedDescription)"
-                showingAlert = true
-            }
-        } else {
-            // 记录失败访问
-            let log = PasswordAccessLog(
-                filePath: file.path,
-                fileName: file.name,
-                isSuccessful: false,
-                accessType: "unlock"
-            )
-            modelContext.insert(log)
-            
-            alertMessage = "密码不正确，请重试"
-            showingAlert = true
-        }
-        
-        // 清空密码
-        password = ""
-    }
 }
 
 // MARK: - 应用入口
@@ -3817,7 +3009,6 @@ struct FileLockerApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             LockedFile.self,
-            PasswordAccessLog.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -3847,7 +3038,7 @@ struct FileLockerApp: App {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 
                 Button("授予完全磁盘访问权限") {
-                    FullDiskAccessHelper.shared.openFullDiskAccessPreferences()
+                    FileLockerAccessHelper.shared.openSystemSettings(panel: "Security")
                 }
             }
         }
@@ -3871,61 +3062,13 @@ struct FileLockerApp: App {
 }
 
 class FullDiskAccessState: ObservableObject {
-    @Published var hasRequested = FullDiskAccessHelper.shared.hasShownAccessPrompt
+    @Published var hasRequested = FileLockerAccessHelper.shared.hasShownAccessPrompt
     
     init() {}
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // 检查应用是否在应用程序文件夹中
-        checkApplicationLocation()
-    }
-    
-    private func checkApplicationLocation() {
-        let bundlePath = Bundle.main.bundlePath
-        
-        if !bundlePath.hasPrefix("/Applications") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                let alert = NSAlert()
-                alert.messageText = "推荐将FileLocker移动到应用程序文件夹"
-                alert.informativeText = """
-                为了确保FileLocker能够正确显示在系统设置的权限列表中，建议将应用移动到应用程序文件夹。
-                
-                您希望现在进行移动吗？
-                """
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "是，移动到应用程序")
-                alert.addButton(withTitle: "稍后再说")
-                
-                if alert.runModal() == .alertFirstButtonReturn {
-                    // 尝试移动应用到应用程序文件夹
-                    let applicationsPath = "/Applications"
-                    let appName = URL(fileURLWithPath: bundlePath).lastPathComponent
-                    let targetPath = "\(applicationsPath)/\(appName)"
-                    
-                    do {
-                        try FileManager.default.copyItem(atPath: bundlePath, toPath: targetPath)
-                        
-                        let successAlert = NSAlert()
-                        successAlert.messageText = "已成功移动到应用程序文件夹"
-                        successAlert.informativeText = "FileLocker已被复制到应用程序文件夹。建议您关闭此版本，并从应用程序文件夹启动FileLocker。"
-                        successAlert.alertStyle = .informational
-                        successAlert.addButton(withTitle: "好的")
-                        successAlert.runModal()
-                    } catch {
-                        let errorAlert = NSAlert()
-                        errorAlert.messageText = "无法移动到应用程序文件夹"
-                        errorAlert.informativeText = "出现错误: \(error.localizedDescription)\n\n您可以手动将应用拖到应用程序文件夹。"
-                        errorAlert.alertStyle = .warning
-                        errorAlert.addButton(withTitle: "好的")
-                        errorAlert.runModal()
-                    }
-                }
-            }
-        }
-    }
-}
+// AppDelegate已移至Main.swift
+// 使用Main.swift中定义的AppDelegate
 
 // 添加一个用于显示功能项的新组件
 struct FeatureRow: View {
@@ -3952,795 +3095,5 @@ struct FeatureRow: View {
             }
         }
         .padding(.vertical, 4)
-    }
-}
-
-// 添加SecurityView组件
-struct SecurityView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var lockedFiles: [LockedFile]
-    @Query private var accessLogs: [PasswordAccessLog]
-    @State private var passwordProtectedOnly = false
-    @State private var selectedFile: LockedFile?
-    @State private var showingPasswordDialog = false
-    @State private var password = ""
-    @State private var confirmPassword = ""
-    @State private var alertMessage: String?
-    @State private var showingAlert = false
-    @State private var showingResetDialog = false
-    @State private var currentPassword = ""
-    @State private var showingAccessLogs = false
-    @State private var minPasswordLength = 6
-    @State private var requireSpecialChars = true
-    @State private var requireNumbers = true
-    
-    var filteredFiles: [LockedFile] {
-        passwordProtectedOnly ? lockedFiles.filter { $0.isPasswordProtected } : lockedFiles
-    }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            Text("密码保护管理")
-                .font(.headline)
-                .padding(.top, 12)
-            
-            HStack(spacing: 16) {
-                // 左侧列表
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("保护文件列表")
-                            .font(.system(size: 14, weight: .medium))
-                        
-                        Spacer()
-                        
-                        Toggle("仅显示密码保护", isOn: $passwordProtectedOnly)
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 12))
-                    }
-                    .padding(.bottom, 4)
-                    
-                    List(selection: $selectedFile) {
-                        ForEach(filteredFiles) { file in
-                            HStack {
-                                Image(systemName: file.isDirectory ? "folder.fill" : "doc.fill")
-                                    .foregroundColor(file.isPasswordProtected ? .blue : .gray)
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(file.name)
-                                        .font(.system(size: 13))
-                                        .lineLimit(1)
-                                    
-                                    Text(file.path)
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                }
-                                
-                                Spacer()
-                                
-                                if file.isPasswordProtected {
-                                    Image(systemName: "lock.fill")
-                                        .foregroundColor(.blue)
-                                        .font(.system(size: 12))
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                    }
-                    .listStyle(.bordered(alternatesRowBackgrounds: true))
-                    .frame(minHeight: 240)
-                }
-                .frame(width: 300)
-                
-                // 右侧详情
-                VStack(alignment: .leading) {
-                    Text("文件保护详情")
-                        .font(.system(size: 14, weight: .medium))
-                        .padding(.bottom, 8)
-                    
-                    if let file = selectedFile {
-                        // 文件详情卡片
-                        VStack(alignment: .leading, spacing: 16) {
-                            // 文件信息
-                            GroupBox(label: Text("文件信息").font(.system(size: 12, weight: .medium))) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    LabeledContent("名称", value: file.name)
-                                    LabeledContent("路径", value: file.path)
-                                    LabeledContent("类型", value: file.isDirectory ? "文件夹" : "文件")
-                                    LabeledContent("锁定状态", value: file.isLocked ? "已锁定" : "未锁定")
-                                    LabeledContent("密码保护", value: file.isPasswordProtected ? "已启用" : "未启用")
-                                    if let lastAccess = file.lastAccessTime {
-                                        LabeledContent("最后访问", value: formatDate(lastAccess))
-                                    }
-                                    LabeledContent("访问尝试次数", value: "\(file.accessAttempts)")
-                                }
-                                .font(.system(size: 12))
-                                .padding(8)
-                            }
-                            .padding(.horizontal, 4)
-                            
-                            // 密码保护操作
-                            GroupBox(label: Text("密码保护操作").font(.system(size: 12, weight: .medium))) {
-                                VStack(spacing: 10) {
-                                    if file.isPasswordProtected {
-                                        Button("重设密码") {
-                                            resetPassword()
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        
-                                        Button("移除密码保护") {
-                                            removePasswordProtection()
-                                        }
-                                        .buttonStyle(.bordered)
-                                        
-                                        Button("查看访问记录") {
-                                            showingAccessLogs = true
-                                        }
-                                        .buttonStyle(.bordered)
-                                    } else {
-                                        Button("添加密码保护") {
-                                            showingPasswordDialog = true
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                    }
-                                }
-                                .padding(8)
-                            }
-                            .padding(.horizontal, 4)
-                        }
-                    } else {
-                        // 未选择文件
-                        VStack(spacing: 15) {
-                            Image(systemName: "lock.shield")
-                                .font(.system(size: 30))
-                                .foregroundColor(.secondary)
-                            Text("选择文件查看详情")
-                                .font(.system(size: 14))
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                    
-                    Spacer()
-                    
-                    // 密码策略设置
-                    GroupBox(label: Text("密码策略").font(.system(size: 12, weight: .medium))) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("最小密码长度")
-                                    .font(.system(size: 12))
-                                
-                                Stepper("\(minPasswordLength)个字符", value: $minPasswordLength, in: 4...16)
-                                    .font(.system(size: 12))
-                            }
-                            
-                            HStack {
-                                Toggle("要求特殊字符", isOn: $requireSpecialChars)
-                                    .font(.system(size: 12))
-                                
-                                Spacer()
-                                
-                                Toggle("要求数字", isOn: $requireNumbers)
-                                    .font(.system(size: 12))
-                            }
-                        }
-                        .padding(8)
-                    }
-                    .padding(.horizontal, 4)
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .padding(12)
-        }
-        .sheet(isPresented: $showingPasswordDialog) {
-            PasswordDialogView(
-                password: $password,
-                confirmPassword: $confirmPassword,
-                onSubmit: addPasswordProtection,
-                minLength: minPasswordLength,
-                requireSpecialChars: requireSpecialChars,
-                requireNumbers: requireNumbers
-            )
-        }
-        .sheet(isPresented: $showingResetDialog) {
-            ResetPasswordView(
-                currentPassword: $currentPassword,
-                newPassword: $password,
-                confirmPassword: $confirmPassword,
-                onSubmit: confirmResetPassword,
-                minLength: minPasswordLength,
-                requireSpecialChars: requireSpecialChars,
-                requireNumbers: requireNumbers
-            )
-        }
-        .sheet(isPresented: $showingAccessLogs) {
-            if let file = selectedFile {
-                AccessLogsView(filePath: file.path)
-            }
-        }
-        .alert("操作提示", isPresented: $showingAlert) {
-            Button("确定", role: .cancel) {}
-        } message: {
-            if let message = alertMessage {
-                Text(message)
-            }
-        }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: date)
-    }
-    
-    private func addPasswordProtection() {
-        guard let file = selectedFile else { return }
-        
-        // 验证密码
-        if !validatePassword() { return }
-        
-        // 验证通过，添加密码保护
-        do {
-            let passwordHash = FileLockerService.shared.hashPassword(password)
-            
-            // 设置密码保护属性
-            file.isPasswordProtected = true
-            file.passwordHash = passwordHash
-            file.lastAccessTime = Date()
-            
-            // 重新锁定文件
-            try FileLockerService.shared.lockFile(at: file.path, withBookmark: file.bookmark)
-            
-            // 记录操作日志
-            let log = PasswordAccessLog(
-                filePath: file.path,
-                fileName: file.name,
-                isSuccessful: true,
-                accessType: "password_set"
-            )
-            modelContext.insert(log)
-            
-            // 清空密码字段
-            password = ""
-            confirmPassword = ""
-            
-            alertMessage = "密码保护已成功添加"
-            showingAlert = true
-        } catch {
-            alertMessage = "设置密码保护失败: \(error.localizedDescription)"
-            showingAlert = true
-        }
-    }
-    
-    private func resetPassword() {
-        guard let file = selectedFile, file.isPasswordProtected else { return }
-        showingResetDialog = true
-    }
-    
-    private func confirmResetPassword() {
-        guard let file = selectedFile, file.isPasswordProtected else { return }
-        
-        // 验证当前密码
-        if let hash = file.passwordHash {
-            if !FileLockerService.shared.verifyPassword(currentPassword, against: hash) {
-                alertMessage = "当前密码验证失败"
-                showingAlert = true
-                return
-            }
-        }
-        
-        // 验证新密码
-        if !validatePassword() { return }
-        
-        // 更新密码
-        let newPasswordHash = FileLockerService.shared.hashPassword(password)
-        file.passwordHash = newPasswordHash
-        file.lastAccessTime = Date()
-        
-        // 记录操作日志
-        let log = PasswordAccessLog(
-            filePath: file.path,
-            fileName: file.name,
-            isSuccessful: true,
-            accessType: "password_reset"
-        )
-        modelContext.insert(log)
-        
-        // 清空密码字段
-        password = ""
-        confirmPassword = ""
-        currentPassword = ""
-        
-        alertMessage = "密码已成功重置"
-        showingAlert = true
-    }
-    
-    private func removePasswordProtection() {
-        guard let file = selectedFile, file.isPasswordProtected else { return }
-        
-        // 弹出密码确认
-        // 这里简化处理，实际应该弹出一个对话框确认密码
-        file.isPasswordProtected = false
-        file.passwordHash = nil
-        file.lastAccessTime = Date()
-        
-        // 记录操作日志
-        let log = PasswordAccessLog(
-            filePath: file.path,
-            fileName: file.name,
-            isSuccessful: true,
-            accessType: "password_removed"
-        )
-        modelContext.insert(log)
-        
-        alertMessage = "密码保护已移除"
-        showingAlert = true
-    }
-    
-    private func validatePassword() -> Bool {
-        // 验证密码
-        if password.isEmpty {
-            alertMessage = "密码不能为空"
-            showingAlert = true
-            return false
-        }
-        
-        if password != confirmPassword {
-            alertMessage = "两次输入的密码不一致"
-            showingAlert = true
-            return false
-        }
-        
-        if password.count < minPasswordLength {
-            alertMessage = "密码长度必须至少\(minPasswordLength)个字符"
-            showingAlert = true
-            return false
-        }
-        
-        // 验证是否包含特殊字符
-        if requireSpecialChars {
-            let specialCharRegex = ".*[^A-Za-z0-9].*"
-            if !NSPredicate(format: "SELF MATCHES %@", specialCharRegex).evaluate(with: password) {
-                alertMessage = "密码必须包含至少一个特殊字符"
-                showingAlert = true
-                return false
-            }
-        }
-        
-        // 验证是否包含数字
-        if requireNumbers {
-            let numberRegex = ".*[0-9].*"
-            if !NSPredicate(format: "SELF MATCHES %@", numberRegex).evaluate(with: password) {
-                alertMessage = "密码必须包含至少一个数字"
-                showingAlert = true
-                return false
-            }
-        }
-        
-        return true
-    }
-}
-
-// 密码设置对话框
-struct PasswordDialogView: View {
-    @Binding var password: String
-    @Binding var confirmPassword: String
-    let onSubmit: () -> Void
-    let minLength: Int
-    let requireSpecialChars: Bool
-    let requireNumbers: Bool
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("设置密码保护")
-                .font(.headline)
-                .padding(.top, 20)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("请输入新密码")
-                    .font(.system(size: 13))
-                
-                SecureField("密码", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-                
-                Text("请确认密码")
-                    .font(.system(size: 13))
-                
-                SecureField("确认密码", text: $confirmPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-            }
-            
-            // 密码规则提示
-            VStack(alignment: .leading, spacing: 4) {
-                Text("密码要求：")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Text("• 至少\(minLength)个字符")
-                    .font(.system(size: 11))
-                    .foregroundColor(password.count >= minLength ? .green : .secondary)
-                
-                if requireSpecialChars {
-                    Text("• 至少1个特殊字符")
-                        .font(.system(size: 11))
-                        .foregroundColor(
-                            NSPredicate(format: "SELF MATCHES %@", ".*[^A-Za-z0-9].*").evaluate(with: password)
-                            ? .green : .secondary
-                        )
-                }
-                
-                if requireNumbers {
-                    Text("• 至少1个数字")
-                        .font(.system(size: 11))
-                        .foregroundColor(
-                            NSPredicate(format: "SELF MATCHES %@", ".*[0-9].*").evaluate(with: password)
-                            ? .green : .secondary
-                        )
-                }
-            }
-            .frame(width: 250, alignment: .leading)
-            .padding(.top, 8)
-            
-            HStack(spacing: 12) {
-                Button("取消") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-                
-                Button("确定") {
-                    onSubmit()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(password.isEmpty || confirmPassword.isEmpty || password != confirmPassword)
-            }
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-        }
-        .frame(width: 300)
-    }
-}
-
-// 重置密码对话框
-struct ResetPasswordView: View {
-    @Binding var currentPassword: String
-    @Binding var newPassword: String
-    @Binding var confirmPassword: String
-    let onSubmit: () -> Void
-    let minLength: Int
-    let requireSpecialChars: Bool
-    let requireNumbers: Bool
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("重置密码")
-                .font(.headline)
-                .padding(.top, 20)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("请输入当前密码")
-                    .font(.system(size: 13))
-                
-                SecureField("当前密码", text: $currentPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-                
-                Text("请输入新密码")
-                    .font(.system(size: 13))
-                
-                SecureField("新密码", text: $newPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-                
-                Text("请确认新密码")
-                    .font(.system(size: 13))
-                
-                SecureField("确认新密码", text: $confirmPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-            }
-            
-            // 密码规则提示 (与PasswordDialogView中相同)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("密码要求：")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Text("• 至少\(minLength)个字符")
-                    .font(.system(size: 11))
-                    .foregroundColor(newPassword.count >= minLength ? .green : .secondary)
-                
-                if requireSpecialChars {
-                    Text("• 至少1个特殊字符")
-                        .font(.system(size: 11))
-                        .foregroundColor(
-                            NSPredicate(format: "SELF MATCHES %@", ".*[^A-Za-z0-9].*").evaluate(with: newPassword)
-                            ? .green : .secondary
-                        )
-                }
-                
-                if requireNumbers {
-                    Text("• 至少1个数字")
-                        .font(.system(size: 11))
-                        .foregroundColor(
-                            NSPredicate(format: "SELF MATCHES %@", ".*[0-9].*").evaluate(with: newPassword)
-                            ? .green : .secondary
-                        )
-                }
-            }
-            .frame(width: 250, alignment: .leading)
-            .padding(.top, 8)
-            
-            HStack(spacing: 12) {
-                Button("取消") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-                
-                Button("确定") {
-                    onSubmit()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(currentPassword.isEmpty || newPassword.isEmpty || confirmPassword.isEmpty || newPassword != confirmPassword)
-            }
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-        }
-        .frame(width: 300)
-    }
-}
-
-// 访问记录视图
-struct AccessLogsView: View {
-    let filePath: String
-    @Environment(\.dismiss) private var dismiss
-    @Query private var allLogs: [PasswordAccessLog]
-    
-    var logs: [PasswordAccessLog] {
-        allLogs.filter { $0.filePath == filePath }
-            .sorted { $0.accessTime > $1.accessTime }
-    }
-    
-    var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("文件访问记录")
-                    .font(.headline)
-                
-                Spacer()
-                
-                Button("关闭") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding([.horizontal, .top], 16)
-            
-            if logs.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 32))
-                        .foregroundColor(.secondary)
-                    
-                    Text("暂无访问记录")
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Table(logs) {
-                    TableColumn("时间") { log in
-                        Text(formatDate(log.accessTime))
-                            .font(.system(size: 12))
-                    }
-                    
-                    TableColumn("操作类型") { log in
-                        Text(formatAccessType(log.accessType))
-                            .font(.system(size: 12))
-                    }
-                    
-                    TableColumn("状态") { log in
-                        Text(log.isSuccessful ? "成功" : "失败")
-                            .foregroundColor(log.isSuccessful ? .green : .red)
-                            .font(.system(size: 12))
-                    }
-                }
-                .frame(minHeight: 250)
-                .padding(.horizontal, 16)
-            }
-            
-            Spacer()
-        }
-        .frame(width: 400, height: 350)
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: date)
-    }
-    
-    private func formatAccessType(_ type: String) -> String {
-        switch type {
-        case "unlock": return "解锁"
-        case "lock": return "锁定"
-        case "view": return "查看"
-        case "password_set": return "设置密码"
-        case "password_reset": return "重置密码"
-        case "password_removed": return "移除密码"
-        default: return type
-        }
-    }
-}
-
-// 密码验证对话框
-struct PasswordPromptView: View {
-    @Binding var password: String
-    let onSubmit: () -> Void
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("密码验证")
-                .font(.headline)
-                .padding(.top, 20)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("请输入密码解锁文件")
-                    .font(.system(size: 13))
-                
-                SecureField("密码", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-            }
-            
-            HStack(spacing: 12) {
-                Button("取消") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-                
-                Button("确定") {
-                    onSubmit()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(password.isEmpty)
-            }
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-        }
-        .frame(width: 300)
-    }
-}
-
-// 密码设置管理视图
-struct PasswordSettingsView: View {
-    let file: LockedFile
-    let modelContext: ModelContext
-    let onPasswordRemoved: () -> Void
-    @State private var showingConfirmRemove = false
-    @State private var confirmPassword = ""
-    @State private var alertMessage: String?
-    @State private var showingAlert = false
-    @State private var showingAccessLogs = false
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("密码保护设置")
-                .font(.headline)
-                .padding(.top, 20)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("文件: \(file.name)")
-                    .font(.system(size: 13, weight: .medium))
-                
-                Text("路径: \(file.path)")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(width: 300, alignment: .leading)
-            .padding(.horizontal, 20)
-            
-            Divider()
-                .padding(.vertical, 8)
-            
-            Button("查看访问记录") {
-                showingAccessLogs = true
-            }
-            .buttonStyle(.bordered)
-            
-            Button("移除密码保护") {
-                showingConfirmRemove = true
-            }
-            .buttonStyle(.bordered)
-            .foregroundColor(.red)
-            
-            Button("关闭") {
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
-        }
-        .frame(width: 350)
-        .alert("操作提示", isPresented: $showingAlert) {
-            Button("确定", role: .cancel) {}
-        } message: {
-            if let message = alertMessage {
-                Text(message)
-            }
-        }
-        .sheet(isPresented: $showingConfirmRemove) {
-            VStack(spacing: 16) {
-                Text("确认移除密码保护")
-                    .font(.headline)
-                    .padding(.top, 20)
-                
-                Text("请输入当前密码以确认移除")
-                    .font(.system(size: 13))
-                
-                SecureField("当前密码", text: $confirmPassword)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 250)
-                
-                HStack(spacing: 12) {
-                    Button("取消") {
-                        confirmPassword = ""
-                        showingConfirmRemove = false
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    Button("确定") {
-                        removePasswordProtection()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .foregroundColor(.red)
-                    .disabled(confirmPassword.isEmpty)
-                }
-                .padding(.top, 8)
-                .padding(.bottom, 20)
-            }
-            .frame(width: 300)
-        }
-        .sheet(isPresented: $showingAccessLogs) {
-            AccessLogsView(filePath: file.path)
-        }
-    }
-    
-    private func removePasswordProtection() {
-        // 验证密码
-        if let hash = file.passwordHash, FileLockerService.shared.verifyPassword(confirmPassword, against: hash) {
-            // 密码正确，移除密码保护
-            file.isPasswordProtected = false
-            file.passwordHash = nil
-            
-            // 记录操作日志
-            let log = PasswordAccessLog(
-                filePath: file.path,
-                fileName: file.name,
-                isSuccessful: true,
-                accessType: "password_removed"
-            )
-            modelContext.insert(log)
-            
-            // 关闭对话框
-            showingConfirmRemove = false
-            onPasswordRemoved()
-            dismiss()
-        } else {
-            // 密码错误
-            alertMessage = "密码不正确，无法移除密码保护"
-            showingAlert = true
-            confirmPassword = ""
-            showingConfirmRemove = false
-        }
     }
 }

@@ -1,12 +1,17 @@
 version: "Apple Swift version 6.0.3 (swiftlang-6.0.3.1.10 clang-1600.0.30.1)"
 options: "e8d136b81b34abe731551bd966ff4bcad52e1afa781b3718393de96f852937a6"
-build_start_time: [1746523369, 806900000]
-build_end_time: [1746523369, 810527000]
+build_start_time: [1746604548, 110659000]
+build_end_time: [1746604548, 696411000]
 inputs:
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/BrowserViewComponents.swift": !dirty [1746523168, 502314235]
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ContentView.swift": !dirty [1746523335, 738534333]
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/FileLockerMain.swift": !dirty [1746522955, 808670952]
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Main.swift": !dirty [1746502787, 607094109]
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewComponents.swift": !dirty [1746523309, 805897168]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ContentView.swift": !dirty [1746599027, 35507156]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/FileLockerMain.swift": !dirty [1746604539, 438632908]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Main.swift": !dirty [1746602630, 997187154]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/PermissionHandler.swift": !dirty [1746584298, 473242191]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/BookmarkManager.swift": !dirty [1746600247, 782010533]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/FileLockerService.swift": !dirty [1746601447, 874434035]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/FileService.swift": !dirty [1746583618, 521460237]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Utils/Errors.swift": !dirty [1746601337, 754186430]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Utils/Helpers/FullDiskAccessHelper.swift": !dirty [1746601810, 773388817]
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewModels/FileLockerViewModel.swift": !dirty [1746600850, 747396953]
   ? "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/DerivedSources/GeneratedAssetSymbols.swift"
-  : !dirty [1746523368, 337825609]
+  : !dirty [1746604547, 962689428]

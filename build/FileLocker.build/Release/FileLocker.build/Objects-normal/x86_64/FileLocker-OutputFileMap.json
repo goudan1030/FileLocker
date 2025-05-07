@@ -7,11 +7,6 @@
     "emit-module-diagnostics" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLocker-master-emit-module.dia",
     "swift-dependencies" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLocker-master.swiftdeps"
   },
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/BrowserViewComponents.swift" : {
-    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/BrowserViewComponents.o",
-    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/BrowserViewComponents.bc",
-    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/BrowserViewComponents.o"
-  },
   "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ContentView.swift" : {
     "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/ContentView.o",
     "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/ContentView.bc",
@@ -27,10 +22,40 @@
     "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/Main.bc",
     "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/Main.o"
   },
-  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewComponents.swift" : {
-    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/ViewComponents.o",
-    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/ViewComponents.bc",
-    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/ViewComponents.o"
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/PermissionHandler.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/PermissionHandler.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/PermissionHandler.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/PermissionHandler.o"
+  },
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/BookmarkManager.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/BookmarkManager.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/BookmarkManager.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/BookmarkManager.o"
+  },
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/FileLockerService.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLockerService.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLockerService.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLockerService.o"
+  },
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Services/FileService.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileService.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileService.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileService.o"
+  },
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Utils/Errors.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/Errors.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/Errors.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/Errors.o"
+  },
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/Utils/Helpers/FullDiskAccessHelper.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FullDiskAccessHelper.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FullDiskAccessHelper.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FullDiskAccessHelper.o"
+  },
+  "/Users/zwd/Downloads/workplace/FileLocker/FileLocker/ViewModels/FileLockerViewModel.swift" : {
+    "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLockerViewModel.o",
+    "llvm-bc" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLockerViewModel.bc",
+    "object" : "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/FileLockerViewModel.o"
   },
   "/Users/zwd/Downloads/workplace/FileLocker/build/FileLocker.build/Release/FileLocker.build/DerivedSources/GeneratedAssetSymbols.swift" : {
     "index-unit-output-path" : "/FileLocker.build/Release/FileLocker.build/Objects-normal/x86_64/GeneratedAssetSymbols.o",

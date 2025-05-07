@@ -22,5 +22,7 @@
     <string>6.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>FileLocker需要访问其他应用以完成文件操作</string>
 </dict>
 </plist> 
